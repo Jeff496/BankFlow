@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/app/actions/auth";
@@ -22,6 +23,16 @@ export default async function DashboardPage() {
   const displayName =
     profile?.display_name ?? user.email?.split("@")[0] ?? "there";
 
+  // RLS filters to owned + member budgets.
+  const { data: budgets } = await supabase
+    .from("budgets")
+    .select("id, name, type, archived_at")
+    .order("created_at", { ascending: false });
+
+  const personal = (budgets ?? []).filter((b) => b.type === "personal" && !b.archived_at);
+  const group = (budgets ?? []).filter((b) => b.type === "group" && !b.archived_at);
+  const archived = (budgets ?? []).filter((b) => b.archived_at !== null);
+
   return (
     <main className="mx-auto max-w-5xl p-8">
       <header className="flex items-start justify-between">
@@ -41,11 +52,50 @@ export default async function DashboardPage() {
         </form>
       </header>
 
-      <section className="mt-8 rounded-2xl border border-dashed border-[var(--color-border)] p-8 text-center">
-        <p className="text-sm text-[var(--color-muted-foreground)]">
-          Your budgets will appear here. Coming in Step 4.
-        </p>
-      </section>
+      <BudgetSection title="Personal" budgets={personal} />
+      {group.length > 0 && <BudgetSection title="Group" budgets={group} />}
+      {archived.length > 0 && (
+        <BudgetSection title="Archived" budgets={archived} archived />
+      )}
+
+      {personal.length === 0 && group.length === 0 && (
+        <section className="mt-8 rounded-2xl border border-dashed border-[var(--color-border)] p-8 text-center">
+          <p className="text-sm text-[var(--color-muted-foreground)]">
+            No budgets yet. Create one via <code className="font-mono">POST /api/budgets</code> to get started.
+          </p>
+        </section>
+      )}
     </main>
+  );
+}
+
+function BudgetSection({
+  title,
+  budgets,
+  archived,
+}: {
+  title: string;
+  budgets: { id: string; name: string }[];
+  archived?: boolean;
+}) {
+  return (
+    <section className="mt-8">
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[var(--color-muted-foreground)]">
+        {title}
+      </h2>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
+        {budgets.map((b) => (
+          <Link
+            key={b.id}
+            href={`/budget/${b.id}`}
+            className={`rounded-xl border border-[var(--color-border)] p-4 hover:bg-[var(--color-muted)] ${
+              archived ? "opacity-60" : ""
+            }`}
+          >
+            <p className="font-medium">{b.name}</p>
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }
