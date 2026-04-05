@@ -6,6 +6,7 @@ import { ValidationError } from "@/lib/api/errors";
 import { created } from "@/lib/api/response";
 import { tracedQuery } from "@/lib/supabase/logged-client";
 import { log } from "@/lib/logger";
+import { categorize, prepareRules } from "@/lib/categorize";
 
 const MAX_ROWS = 5000;
 
@@ -93,19 +94,37 @@ async function handler(req: NextRequest): Promise<Response> {
       .single(),
   );
 
+  // Fetch categories to auto-assign via keyword matching. Ordered ASC by
+  // created_at so older categories take precedence (first-match-wins per
+  // mvp.md §Step 6). Empty keyword arrays / empty category list → nothing
+  // matches and all rows stay uncategorized.
+  const categories = await tracedQuery("categories.for_categorize", () =>
+    supabase
+      .from("categories")
+      .select("id, keywords, created_at")
+      .eq("budget_id", budget_id)
+      .order("created_at", { ascending: true }),
+  );
+  const rules = prepareRules(categories);
+
   // Bulk insert transactions. PostgREST bulk insert is atomic per request —
   // all rows succeed or none. On failure, delete the uploads row we just
   // created so we don't leave an orphan "complete" upload with 0 rows.
-  const rows = toInsert.map((t) => ({
-    budget_id,
-    upload_id: upload.id,
-    uploaded_by: user.id,
-    date: t.date,
-    description: t.description,
-    amount: t.amount,
-    hash: t.hash,
-    category_id: null,
-  }));
+  let autoCategorized = 0;
+  const rows = toInsert.map((t) => {
+    const categoryId = categorize(t.description, rules);
+    if (categoryId) autoCategorized += 1;
+    return {
+      budget_id,
+      upload_id: upload.id,
+      uploaded_by: user.id,
+      date: t.date,
+      description: t.description,
+      amount: t.amount,
+      hash: t.hash,
+      category_id: categoryId,
+    };
+  });
 
   try {
     await tracedQuery("transactions.bulk_insert", () =>
@@ -132,11 +151,13 @@ async function handler(req: NextRequest): Promise<Response> {
     uploadId: upload.id,
     transactionCount: toInsert.length,
     duplicatesFound,
+    autoCategorized,
   });
 
   return created({
     upload,
     inserted_count: toInsert.length,
+    auto_categorized_count: autoCategorized,
     skipped_duplicates: duplicatesFound,
   });
 }
