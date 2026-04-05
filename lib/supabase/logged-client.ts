@@ -1,21 +1,24 @@
 import { log } from "@/lib/logger";
 
-type SupabaseResult<T> = { data: T | null; error: unknown };
+type SupabaseResult = { data: unknown; error: unknown };
 
 /**
  * Wraps a single Supabase query in timing + structured logging. Throws the
  * underlying PostgrestError on failure so the central error-handler can map
  * it (RLS → RLSDeniedError, unique_violation → ConflictError, etc.).
  *
+ * Return type is `NonNullable<R["data"]>` — we throw when data is null, so
+ * callers can use the result directly without a null check.
+ *
  * Usage:
  *   const budgets = await tracedQuery('budgets.list', () =>
  *     supabase.from('budgets').select('*'),
  *   );
  */
-export async function tracedQuery<T>(
+export async function tracedQuery<R extends SupabaseResult>(
   label: string,
-  fn: () => PromiseLike<SupabaseResult<T>>,
-): Promise<T> {
+  fn: () => PromiseLike<R>,
+): Promise<NonNullable<R["data"]>> {
   const start = performance.now();
   const { data, error } = await fn();
   const durationMs = Math.round(performance.now() - start);
@@ -38,5 +41,5 @@ export async function tracedQuery<T>(
     // PGRST116; for list queries returning null, surface explicitly.
     throw new Error(`tracedQuery('${label}') returned null data`);
   }
-  return data;
+  return data as NonNullable<R["data"]>;
 }
