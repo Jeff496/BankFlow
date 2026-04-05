@@ -44,11 +44,13 @@ export function BudgetDashboard({
   budgetName,
   budgetType,
   archived,
+  currentUserId,
 }: {
   budgetId: string;
   budgetName: string;
   budgetType: string;
   archived: boolean;
+  currentUserId: string;
 }) {
   const [range, setRange] = useState<DateRange | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -188,6 +190,14 @@ export function BudgetDashboard({
           <section className="mt-8">
             <UploadZone budgetId={budgetId} disabled={archived} />
           </section>
+
+          {budgetType === "group" && (
+            <MembersSection
+              budgetId={budgetId}
+              currentUserId={currentUserId}
+              archived={archived}
+            />
+          )}
         </>
       )}
 
@@ -692,6 +702,264 @@ function AddCategoryForm({
             className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-foreground)] hover:opacity-90 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- members (group budgets) ----------
+
+interface Member {
+  id: string;
+  user_id: string;
+  role: "owner" | "editor" | "viewer";
+  joined_at: string;
+  users: { id: string; email: string; display_name: string | null } | null;
+}
+
+interface PendingInvite {
+  id: string;
+  email: string;
+  role: "editor" | "viewer";
+  expires_at: string;
+  status: string;
+}
+
+function MembersSection({
+  budgetId,
+  currentUserId,
+  archived,
+}: {
+  budgetId: string;
+  currentUserId: string;
+  archived: boolean;
+}) {
+  const [members, setMembers] = useState<Member[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [mRes, iRes] = await Promise.all([
+        fetch(`/api/budgets/${budgetId}/members`),
+        fetch(`/api/invitations`), // only shows invites addressed to me
+      ]);
+      if (mRes.ok) setMembers((await mRes.json()).members ?? []);
+      // Pending invites view: fetched separately below via direct query is
+      // not possible (RLS hides invitations not addressed to the caller OR
+      // not owned by the caller). Owner can see invites they sent via the
+      // same /api/invitations endpoint with a different filter — but our
+      // current endpoint is "pending for me". So we skip listing sent
+      // invites here for MVP.
+      void iRes; // silence unused
+      setPendingInvites([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to load members");
+      reportClientError(err, { scope: "members.load" });
+    }
+  }, [budgetId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const myRole = members.find((m) => m.user_id === currentUserId)?.role ?? null;
+  const isOwner = myRole === "owner";
+
+  async function removeMember(userId: string) {
+    setBusyId(userId);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/budgets/${budgetId}/members/${userId}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error?.message ?? `HTTP ${res.status}`);
+      }
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "remove failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="mt-8">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Members</h2>
+        {isOwner && !archived && (
+          <button
+            type="button"
+            onClick={() => setInviteOpen(true)}
+            className="text-sm text-[var(--color-primary)] hover:underline"
+          >
+            + Invite
+          </button>
+        )}
+      </div>
+      {error && (
+        <div className="mb-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-900 dark:bg-red-900/20 dark:text-red-200">
+          {error}
+        </div>
+      )}
+      <div className="space-y-2">
+        {members.map((m) => {
+          const isMe = m.user_id === currentUserId;
+          const canRemove =
+            !archived &&
+            ((isOwner && !isMe) || // owner can kick others
+              (isMe && m.role !== "owner")); // anyone can leave (but not owners)
+          return (
+            <div
+              key={m.id}
+              className="flex items-center justify-between rounded-xl border border-[var(--color-border)] p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">
+                  {m.users?.display_name ?? m.users?.email ?? m.user_id}
+                  {isMe && (
+                    <span className="ml-2 text-xs text-[var(--color-muted-foreground)]">
+                      (you)
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  {m.users?.email}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    m.role === "owner"
+                      ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]"
+                      : "bg-[var(--color-muted)] text-[var(--color-muted-foreground)]"
+                  }`}
+                >
+                  {m.role}
+                </span>
+                {canRemove && (
+                  <button
+                    type="button"
+                    onClick={() => removeMember(m.user_id)}
+                    disabled={busyId === m.user_id}
+                    className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                  >
+                    {isMe ? "Leave" : "Remove"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {pendingInvites.length > 0 && <span />}
+      </div>
+
+      {inviteOpen && (
+        <InviteMemberForm
+          budgetId={budgetId}
+          onClose={() => setInviteOpen(false)}
+          onInvited={() => {
+            setInviteOpen(false);
+            void load();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function InviteMemberForm({
+  budgetId,
+  onClose,
+  onInvited,
+}: {
+  budgetId: string;
+  onClose: () => void;
+  onInvited: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<"editor" | "viewer">("editor");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/budgets/${budgetId}/invite`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), role }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error?.message ?? `HTTP ${res.status}`);
+      }
+      onInvited();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed to invite");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl bg-[var(--color-background)] p-6 shadow-xl"
+      >
+        <h2 className="text-lg font-semibold">Invite member</h2>
+        <div className="mt-4 space-y-3">
+          <label className="block text-sm">
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="friend@example.com"
+              className="mt-1 w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="block text-sm">
+            Role
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as "editor" | "viewer")}
+              className="mt-1 w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5 text-sm"
+            >
+              <option value="editor">Editor (can upload + edit)</option>
+              <option value="viewer">Viewer (read-only)</option>
+            </select>
+          </label>
+        </div>
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm hover:bg-[var(--color-muted)] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !email.trim()}
+            className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-foreground)] hover:opacity-90 disabled:opacity-50"
+          >
+            {saving ? "Sending…" : "Send invite"}
           </button>
         </div>
       </div>

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/app/actions/auth";
+import { InvitationsList } from "./InvitationsList";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -51,6 +52,8 @@ export default async function DashboardPage() {
           </button>
         </form>
       </header>
+
+      <InvitationsList />
 
       <BudgetSection title="Personal" budgets={personal} />
       {group.length > 0 && <BudgetSection title="Group" budgets={group} />}

@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { BudgetDashboard } from "./BudgetDashboard";
 
@@ -9,6 +9,11 @@ export default async function BudgetPage({
 }) {
   const { id } = await params;
   const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
   const { data: budget } = await supabase
     .from("budgets")
@@ -24,6 +29,7 @@ export default async function BudgetPage({
       budgetName={budget.name}
       budgetType={budget.type}
       archived={budget.archived_at !== null}
+      currentUserId={user.id}
     />
   );
 }

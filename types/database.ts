@@ -296,6 +296,28 @@ export type Database = {
         Args: { p_user_a: string; p_user_b: string };
         Returns: boolean;
       };
+      accept_invitation: {
+        Args: { p_invitation_id: string };
+        Returns: Json;
+      };
+      decline_invitation: {
+        Args: { p_invitation_id: string };
+        Returns: Json;
+      };
+      list_my_pending_invitations: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          invitation_id: string;
+          budget_id: string;
+          budget_name: string;
+          budget_type: BudgetType;
+          invited_by: string;
+          inviter_name: string | null;
+          role: BudgetRole;
+          expires_at: string;
+          created_at: string;
+        }>;
+      };
     };
     Enums: {
       budget_type: BudgetType;
