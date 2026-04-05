@@ -56,6 +56,8 @@ export type Database = {
           archived_at: string | null;
           created_at: string;
           updated_at: string;
+          sync_started_at: string | null;
+          sheet_last_synced_at: string | null;
         };
         Insert: {
           id?: string;
@@ -66,6 +68,8 @@ export type Database = {
           archived_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          sync_started_at?: string | null;
+          sheet_last_synced_at?: string | null;
         };
         Update: {
           id?: string;
@@ -76,6 +80,8 @@ export type Database = {
           archived_at?: string | null;
           created_at?: string;
           updated_at?: string;
+          sync_started_at?: string | null;
+          sheet_last_synced_at?: string | null;
         };
         Relationships: [];
       };
@@ -101,7 +107,22 @@ export type Database = {
           role?: BudgetRole;
           joined_at?: string;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "budget_members_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "budget_members_budget_id_fkey";
+            columns: ["budget_id"];
+            isOneToOne: false;
+            referencedRelation: "budgets";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       invitations: {
         Row: {

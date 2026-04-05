@@ -39,11 +39,11 @@ async function handler(
     throw new ValidationError("start_date must be <= end_date");
   }
 
-  // Budget access check — also supplies name/type/archived_at to the UI.
+  // Budget access check — also supplies name/type/archived_at/sheet info to the UI.
   const budget = await tracedQuery("dashboard.budget", () =>
     supabase
       .from("budgets")
-      .select("id, name, type, archived_at")
+      .select("id, name, type, archived_at, sheet_id, sheet_last_synced_at")
       .eq("id", id)
       .maybeSingle(),
   );

@@ -5,7 +5,14 @@ import { useCallback, useEffect, useState } from "react";
 import { reportClientError } from "@/lib/client-logger";
 
 interface Summary {
-  budget: { id: string; name: string; type: string; archived_at: string | null };
+  budget: {
+    id: string;
+    name: string;
+    type: string;
+    archived_at: string | null;
+    sheet_id: string | null;
+    sheet_last_synced_at: string | null;
+  };
   metrics: {
     total_spent: number;
     transaction_count: number;
@@ -104,7 +111,14 @@ export function BudgetDashboard({
             )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <SyncButton
+            budgetId={budgetId}
+            sheetId={summary?.budget.sheet_id ?? null}
+            lastSyncedAt={summary?.budget.sheet_last_synced_at ?? null}
+            archived={archived}
+            onSynced={() => void fetchSummary()}
+          />
           <Link
             href={`/budget/${budgetId}/upload`}
             className={`rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-foreground)] hover:opacity-90 ${
@@ -707,6 +721,95 @@ function AddCategoryForm({
       </div>
     </div>
   );
+}
+
+// ---------- sheets sync ----------
+
+function SyncButton({
+  budgetId,
+  sheetId,
+  lastSyncedAt,
+  archived,
+  onSynced,
+}: {
+  budgetId: string;
+  sheetId: string | null;
+  lastSyncedAt: string | null;
+  archived: boolean;
+  onSynced: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function sync() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/sheets/sync/${budgetId}`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const code = body.error?.code;
+        if (code === "GOOGLE_REAUTH_REQUIRED") {
+          setError("Google access expired — sign out and back in to refresh.");
+        } else if (code === "CONFLICT") {
+          setError("Another sync is running. Wait a moment and retry.");
+        } else {
+          setError(body.error?.message ?? `Sync failed (${res.status})`);
+        }
+        return;
+      }
+      onSynced();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "sync failed");
+      reportClientError(err, { scope: "sheets.sync" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const label = sheetId ? "Sync to Sheets" : "Create Google Sheet";
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        {sheetId && (
+          <a
+            href={`https://docs.google.com/spreadsheets/d/${sheetId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-[var(--color-primary)] hover:underline"
+          >
+            Open in Sheets ↗
+          </a>
+        )}
+        <button
+          type="button"
+          onClick={sync}
+          disabled={busy || archived}
+          className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? "Syncing…" : label}
+        </button>
+      </div>
+      {lastSyncedAt && !error && (
+        <p className="text-xs text-[var(--color-muted-foreground)]">
+          synced {relativeTime(lastSyncedAt)}
+        </p>
+      )}
+      {error && (
+        <p className="max-w-xs text-right text-xs text-red-600">{error}</p>
+      )}
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const sec = Math.round((Date.now() - then) / 1000);
+  if (sec < 60) return "just now";
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+  return `${Math.round(sec / 86400)}d ago`;
 }
 
 // ---------- members (group budgets) ----------
