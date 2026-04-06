@@ -22,8 +22,7 @@ export default function LoginPage() {
         provider: "google",
         options: {
           redirectTo: `${window.location.origin}/auth/callback${nextParam}`,
-          scopes:
-            "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file",
+          scopes: "https://www.googleapis.com/auth/drive.file",
           queryParams: {
             access_type: "offline",
             prompt: "consent",
