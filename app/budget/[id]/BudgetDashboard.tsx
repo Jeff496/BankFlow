@@ -64,6 +64,8 @@ export function BudgetDashboard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addCatOpen, setAddCatOpen] = useState(false);
+  const [editCat, setEditCat] = useState<Summary["categories"][number] | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   // Set default range (current month in browser TZ) once on mount
   useEffect(() => {
@@ -95,8 +97,51 @@ export function BudgetDashboard({
     void fetchSummary();
   }, [fetchSummary]);
 
+  async function archiveBudget() {
+    if (!confirm("Archive this budget? You can still view it but writes will be blocked.")) return;
+    setArchiving(true);
+    try {
+      const res = await fetch(`/api/budgets/${budgetId}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      window.location.href = "/dashboard";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "archive failed");
+      reportClientError(err, { scope: "budget.archive" });
+    } finally {
+      setArchiving(false);
+    }
+  }
+
+  async function deleteCategory(catId: string) {
+    if (!confirm("Delete this category? Transactions will become uncategorized.")) return;
+    try {
+      const res = await fetch(`/api/categories/${catId}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      void fetchSummary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "delete failed");
+    }
+  }
+
+  async function deleteTransaction(txId: string) {
+    if (!confirm("Delete this transaction?")) return;
+    try {
+      const res = await fetch(`/api/transactions/${txId}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      void fetchSummary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "delete failed");
+    }
+  }
+
   return (
     <main className="mx-auto max-w-6xl p-4 sm:p-6 md:p-8">
+      <Link
+        href="/dashboard"
+        className="mb-4 inline-flex items-center gap-1 text-sm text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground,#000)]"
+      >
+        ← Dashboard
+      </Link>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-3">
@@ -163,7 +208,11 @@ export function BudgetDashboard({
               </button>
             </div>
             {summary.categories.length > 0 ? (
-              <CategoryGrid categories={summary.categories} />
+              <CategoryGrid
+                categories={summary.categories}
+                onEdit={(c) => setEditCat(c)}
+                onDelete={archived ? undefined : deleteCategory}
+              />
             ) : (
               <EmptyState
                 message="Add categories to organize your transactions and set spending limits."
@@ -190,6 +239,7 @@ export function BudgetDashboard({
               <RecentTransactions
                 rows={summary.recent_transactions}
                 categories={summary.categories}
+                onDelete={archived ? undefined : deleteTransaction}
               />
             ) : (
               <EmptyState
@@ -212,6 +262,23 @@ export function BudgetDashboard({
               archived={archived}
             />
           )}
+
+          {!archived && (
+            <section className="mt-12 rounded-xl border border-red-200 p-4 dark:border-red-900">
+              <h2 className="text-sm font-semibold text-red-600">Danger zone</h2>
+              <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
+                Archiving hides the budget from your dashboard. Data is preserved.
+              </p>
+              <button
+                type="button"
+                onClick={archiveBudget}
+                disabled={archiving}
+                className="mt-3 rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:hover:bg-red-900/20"
+              >
+                {archiving ? "Archiving…" : "Archive budget"}
+              </button>
+            </section>
+          )}
         </>
       )}
 
@@ -222,6 +289,21 @@ export function BudgetDashboard({
           onCreated={() => {
             setAddCatOpen(false);
             void fetchSummary();
+          }}
+        />
+      )}
+
+      {editCat && (
+        <EditCategoryForm
+          category={editCat}
+          onClose={() => setEditCat(null)}
+          onSaved={() => {
+            setEditCat(null);
+            void fetchSummary();
+          }}
+          onDeleted={() => {
+            setEditCat(null);
+            void deleteCategory(editCat.id);
           }}
         />
       )}
@@ -347,13 +429,17 @@ function MetricCard({
 
 function CategoryGrid({
   categories,
+  onEdit,
+  onDelete,
 }: {
   categories: Summary["categories"];
+  onEdit: (c: Summary["categories"][number]) => void;
+  onDelete?: (id: string) => void;
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
       {categories.map((c) => (
-        <CategoryCard key={c.id} category={c} />
+        <CategoryCard key={c.id} category={c} onEdit={onEdit} onDelete={onDelete} />
       ))}
     </div>
   );
@@ -361,8 +447,12 @@ function CategoryGrid({
 
 function CategoryCard({
   category,
+  onEdit,
+  onDelete,
 }: {
   category: Summary["categories"][number];
+  onEdit: (c: Summary["categories"][number]) => void;
+  onDelete?: (id: string) => void;
 }) {
   const pct =
     category.monthly_limit && category.monthly_limit > 0
@@ -370,7 +460,10 @@ function CategoryCard({
       : null;
   const overBudget = pct !== null && pct > 100;
   return (
-    <div className="rounded-xl border border-[var(--color-border)] p-3">
+    <div
+      className="cursor-pointer rounded-xl border border-[var(--color-border)] p-3 transition-colors hover:bg-[var(--color-muted)]"
+      onClick={() => onEdit(category)}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0">
           <span
@@ -407,6 +500,18 @@ function CategoryCard({
       ) : (
         <p className="mt-2 text-xs text-[var(--color-muted-foreground)]">No limit set</p>
       )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(category.id);
+          }}
+          className="mt-2 text-xs text-red-600 hover:underline"
+        >
+          Delete
+        </button>
+      )}
     </div>
   );
 }
@@ -414,9 +519,11 @@ function CategoryCard({
 function RecentTransactions({
   rows,
   categories,
+  onDelete,
 }: {
   rows: Summary["recent_transactions"];
   categories: Summary["categories"];
+  onDelete?: (id: string) => void;
 }) {
   const catMap = new Map(categories.map((c) => [c.id, c]));
   return (
@@ -430,6 +537,7 @@ function RecentTransactions({
               <th className="p-2 text-left">Description</th>
               <th className="p-2 text-right">Amount</th>
               <th className="p-2 text-left">Category</th>
+              {onDelete && <th className="p-2" />}
             </tr>
           </thead>
           <tbody>
@@ -455,6 +563,17 @@ function RecentTransactions({
                       </span>
                     )}
                   </td>
+                  {onDelete && (
+                    <td className="p-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => onDelete(t.id)}
+                        className="text-xs text-red-600 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  )}
                 </tr>
               );
             })}
@@ -474,6 +593,15 @@ function RecentTransactions({
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{t.description}</p>
                 <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">{t.date}</p>
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(t.id)}
+                    className="mt-1 text-xs text-red-600 hover:underline"
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
               <div className="flex flex-col items-end gap-1">
                 <span
@@ -1064,6 +1192,139 @@ function InviteMemberForm({
           >
             {saving ? "Sending…" : "Send invite"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- edit category ----------
+
+function EditCategoryForm({
+  category,
+  onClose,
+  onSaved,
+  onDeleted,
+}: {
+  category: Summary["categories"][number];
+  onClose: () => void;
+  onSaved: () => void;
+  onDeleted: () => void;
+}) {
+  const [name, setName] = useState(category.name);
+  const [color, setColor] = useState(category.color);
+  const [monthlyLimit, setMonthlyLimit] = useState(
+    category.monthly_limit !== null ? String(category.monthly_limit) : "",
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { name: name.trim(), color };
+      body.monthly_limit = monthlyLimit ? Number(monthlyLimit) : null;
+      const res = await fetch(`/api/categories/${category.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b.error?.message ?? `HTTP ${res.status}`);
+      }
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const swatches = [
+    "#ef4444", "#f97316", "#eab308", "#22c55e",
+    "#06b6d4", "#3b82f6", "#a855f7", "#ec4899",
+    "#6b7280",
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl bg-[var(--color-background)] p-6 shadow-xl"
+      >
+        <h2 className="text-lg font-semibold">Edit category</h2>
+        <div className="mt-4 space-y-3">
+          <label className="block text-sm">
+            Name
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5 text-sm"
+            />
+          </label>
+          <div>
+            <p className="text-sm">Color</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              {swatches.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  aria-label={`color ${c}`}
+                  className={`h-7 w-7 rounded-full ${
+                    color === c ? "ring-2 ring-offset-2 ring-[var(--color-primary)]" : ""
+                  }`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+          <label className="block text-sm">
+            Monthly limit
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={monthlyLimit}
+              onChange={(e) => setMonthlyLimit(e.target.value)}
+              placeholder="No limit"
+              className="mt-1 w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-2 py-1.5 text-sm"
+            />
+          </label>
+        </div>
+        {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+        <div className="mt-5 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onDeleted}
+            className="text-sm text-red-600 hover:underline"
+          >
+            Delete category
+          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm hover:bg-[var(--color-muted)] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || !name.trim()}
+              className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-foreground)] hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

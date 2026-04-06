@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { signOut } from "@/app/actions/auth";
 import { InvitationsList } from "./InvitationsList";
+import { CreateBudgetButton } from "./CreateBudget";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -43,14 +44,17 @@ export default async function DashboardPage() {
             Welcome, {displayName}
           </p>
         </div>
-        <form action={signOut}>
-          <button
-            type="submit"
-            className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-muted)]"
-          >
-            Sign out
-          </button>
-        </form>
+        <div className="flex gap-2">
+          <CreateBudgetButton />
+          <form action={signOut}>
+            <button
+              type="submit"
+              className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-muted)]"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
       </header>
 
       <InvitationsList />
@@ -64,8 +68,11 @@ export default async function DashboardPage() {
       {personal.length === 0 && group.length === 0 && (
         <section className="mt-8 rounded-2xl border border-dashed border-[var(--color-border)] p-8 text-center">
           <p className="text-sm text-[var(--color-muted-foreground)]">
-            No budgets yet. Create one via <code className="font-mono">POST /api/budgets</code> to get started.
+            No budgets yet. Create your first budget to start tracking spending.
           </p>
+          <div className="mt-3">
+            <CreateBudgetButton />
+          </div>
         </section>
       )}
     </main>

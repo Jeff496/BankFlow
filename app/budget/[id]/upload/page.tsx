@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { UploadFlow } from "./UploadFlow";
@@ -23,6 +24,12 @@ export default async function UploadPage({
 
   return (
     <main className="mx-auto max-w-5xl p-6 sm:p-8">
+      <Link
+        href={`/budget/${budget.id}`}
+        className="mb-4 inline-flex items-center gap-1 text-sm text-[var(--color-muted-foreground)] hover:text-[var(--color-foreground,#000)]"
+      >
+        ← {budget.name}
+      </Link>
       <header className="mb-8">
         <h1 className="text-2xl font-bold">Upload CSV</h1>
         <p className="mt-1 text-sm text-[var(--color-muted-foreground)]">
