@@ -53,6 +53,7 @@ export function UploadFlow({
   const [transformErrors, setTransformErrors] = useState<{ rowIndex: number; reason: string }[]>([]);
   const [duplicateHashes, setDuplicateHashes] = useState<Set<string>>(new Set());
   const [skipHashes, setSkipHashes] = useState<Set<string>>(new Set());
+  const [invertAmounts, setInvertAmounts] = useState(false);
   const [bankNameToSave, setBankNameToSave] = useState("");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -160,7 +161,10 @@ export function UploadFlow({
     }
 
     const { rows: transformedRows, errors } = await transformRows(parsed.rows, mapping);
-    setTransformed(transformedRows);
+    const finalRows = invertAmounts
+      ? transformedRows.map((r) => ({ ...r, amount: -r.amount }))
+      : transformedRows;
+    setTransformed(finalRows);
     setTransformErrors(errors);
 
     if (transformedRows.length === 0) {
@@ -305,6 +309,8 @@ export function UploadFlow({
           setDateFormat={setDateFormat}
           numberFormat={numberFormat}
           setNumberFormat={setNumberFormat}
+          invertAmounts={invertAmounts}
+          setInvertAmounts={setInvertAmounts}
           detection={detection}
           appliedMapping={appliedMapping}
           onReset={resetToDetection}
@@ -384,6 +390,8 @@ function MapperStep({
   setDateFormat,
   numberFormat,
   setNumberFormat,
+  invertAmounts,
+  setInvertAmounts,
   detection,
   appliedMapping,
   onReset,
@@ -400,6 +408,8 @@ function MapperStep({
   setDateFormat: (f: DateFormat) => void;
   numberFormat: NumberFormat;
   setNumberFormat: (f: NumberFormat) => void;
+  invertAmounts: boolean;
+  setInvertAmounts: (v: boolean) => void;
   detection: ColumnDetection;
   appliedMapping: SavedMapping | null;
   onReset: () => void;
@@ -496,6 +506,14 @@ function MapperStep({
             <option value="US">US (1,234.56)</option>
             <option value="EU">EU (1.234,56)</option>
           </select>
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={invertAmounts}
+            onChange={(e) => setInvertAmounts(e.target.checked)}
+          />
+          Invert amounts (credit card CSVs)
         </label>
       </div>
 
