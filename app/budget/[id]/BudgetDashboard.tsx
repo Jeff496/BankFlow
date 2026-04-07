@@ -781,6 +781,7 @@ function TransactionSection({
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const catMap = new Map(categories.map((c) => [c.id, c]));
 
@@ -822,6 +823,27 @@ function TransactionSection({
       // ignore
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function deleteAll() {
+    const ids = filtered.map((t) => t.id);
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} transaction${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/transactions/batch-delete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setRows((prev) => prev.filter((r) => !ids.includes(r.id)));
+      onRefreshSummary();
+    } catch {
+      // ignore
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -875,15 +897,27 @@ function TransactionSection({
         <h2 className="text-lg font-semibold">
           {showUncategorized ? "Uncategorized transactions" : selectedCatIds.size > 0 ? "Filtered transactions" : "Transactions"}
         </h2>
-        {(selectedCatIds.size > 0 || showUncategorized) && (
-          <button
-            type="button"
-            onClick={onClearFilter}
-            className="text-xs text-[var(--color-muted-foreground)] hover:underline"
-          >
-            Clear filter
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {!archived && filtered.length > 0 && (selectedCatIds.size > 0 || showUncategorized) && (
+            <button
+              type="button"
+              onClick={deleteAll}
+              disabled={deleting}
+              className="text-xs text-red-600 hover:underline disabled:opacity-50"
+            >
+              {deleting ? "Deleting..." : `Delete all (${filtered.length})`}
+            </button>
+          )}
+          {(selectedCatIds.size > 0 || showUncategorized) && (
+            <button
+              type="button"
+              onClick={onClearFilter}
+              className="text-xs text-[var(--color-muted-foreground)] hover:underline"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
       </div>
 
       {filtered.length === 0 && !loading ? (
