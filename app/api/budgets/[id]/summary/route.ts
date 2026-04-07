@@ -60,7 +60,7 @@ async function handler(
     tracedQuery("dashboard.transactions", () =>
       supabase
         .from("transactions")
-        .select("id, date, description, amount, category_id, uploaded_by")
+        .select("id, date, description, amount, category_id, excluded, uploaded_by")
         .eq("budget_id", id)
         .gte("date", start_date)
         .lte("date", end_date)
@@ -76,13 +76,17 @@ async function handler(
   }
 
   // Aggregate — separate income and expense tracking.
-  // Expense categories: negative amounts add to spent (positive amounts offset/reduce spent).
-  // Income categories: positive amounts add to earned.
+  // Excluded transactions are still counted for display but don't affect metrics.
   let total_spent = 0;
   let total_income = 0;
   let uncategorized_count = 0;
+  let excluded_count = 0;
   const perCategory = new Map<string, { spent: number; count: number }>();
   for (const t of transactions) {
+    if (t.excluded) {
+      excluded_count += 1;
+      continue;
+    }
     const amt = Number(t.amount);
     const catType = t.category_id ? catTypeMap.get(t.category_id) ?? "expense" : null;
 
@@ -129,6 +133,7 @@ async function handler(
     total_income: round2(total_income),
     transaction_count: transactions.length,
     uncategorized_count,
+    excluded_count,
     total_limit: round2(total_limit),
     remaining: round2(total_limit - total_spent),
   };

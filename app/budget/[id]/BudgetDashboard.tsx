@@ -18,6 +18,7 @@ interface Summary {
     total_income: number;
     transaction_count: number;
     uncategorized_count: number;
+    excluded_count: number;
     total_limit: number;
     remaining: number;
   };
@@ -709,6 +710,7 @@ interface TxRow {
   description: string;
   amount: number | string;
   category_id: string | null;
+  excluded: boolean;
 }
 
 const TX_PAGE_SIZE = 50;
@@ -758,6 +760,25 @@ function TransactionSection({
       setEditingId(null);
     } catch {
       // ignore — errors shown elsewhere
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function toggleExcluded(txId: string, excluded: boolean) {
+    setBusyId(txId);
+    try {
+      const res = await fetch(`/api/transactions/${txId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ excluded }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setRows((prev) =>
+        prev.map((r) => (r.id === txId ? { ...r, excluded } : r)),
+      );
+    } catch {
+      // ignore
     } finally {
       setBusyId(null);
     }
@@ -855,7 +876,7 @@ function TransactionSection({
                 {filtered.map((t) => {
                   const amt = Number(t.amount);
                   return (
-                    <tr key={t.id} className="border-b border-[var(--color-border)] last:border-0">
+                    <tr key={t.id} className={`border-b border-[var(--color-border)] last:border-0 ${t.excluded ? "opacity-40" : ""}`}>
                       <td className="p-2 font-mono text-xs">{t.date}</td>
                       <td className="p-2">{t.description}</td>
                       <td
@@ -897,7 +918,16 @@ function TransactionSection({
                         )}
                       </td>
                       {!archived && (
-                        <td className="p-2 text-center">
+                        <td className="p-2 text-center whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => toggleExcluded(t.id, !t.excluded)}
+                            disabled={busyId === t.id}
+                            className="text-xs text-[var(--color-muted-foreground)] hover:underline disabled:opacity-50"
+                          >
+                            {t.excluded ? "Include" : "Exclude"}
+                          </button>
+                          <span className="mx-1 text-[var(--color-border)]">|</span>
                           <button
                             type="button"
                             onClick={() => onDelete(t.id)}
@@ -921,19 +951,29 @@ function TransactionSection({
               return (
                 <div
                   key={t.id}
-                  className="flex items-start justify-between rounded-lg border border-[var(--color-border)] p-3"
+                  className={`flex items-start justify-between rounded-lg border border-[var(--color-border)] p-3 ${t.excluded ? "opacity-40" : ""}`}
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{t.description}</p>
                     <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">{t.date}</p>
                     {!archived && (
-                      <button
-                        type="button"
-                        onClick={() => onDelete(t.id)}
-                        className="mt-1 text-xs text-red-600 hover:underline"
-                      >
-                        Delete
-                      </button>
+                      <div className="mt-1 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleExcluded(t.id, !t.excluded)}
+                          disabled={busyId === t.id}
+                          className="text-xs text-[var(--color-muted-foreground)] hover:underline disabled:opacity-50"
+                        >
+                          {t.excluded ? "Include" : "Exclude"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(t.id)}
+                          className="text-xs text-red-600 hover:underline"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     )}
                   </div>
                   <div className="flex flex-col items-end gap-1">

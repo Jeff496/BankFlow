@@ -63,7 +63,7 @@ async function handler(req: NextRequest): Promise<Response> {
 
   let query = supabase
     .from("transactions")
-    .select("id, date, description, amount, category_id, upload_id, uploaded_by, created_at, updated_at")
+    .select("id, date, description, amount, category_id, excluded, upload_id, uploaded_by, created_at, updated_at")
     .eq("budget_id", params.budget_id);
 
   if (params.uncategorized) {

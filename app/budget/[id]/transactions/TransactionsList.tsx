@@ -16,6 +16,7 @@ interface Transaction {
   description: string;
   amount: number | string;
   category_id: string | null;
+  excluded: boolean;
   uploaded_by: string;
 }
 
@@ -85,6 +86,25 @@ export function TransactionsList({
       setRows((prev) => prev.filter((r) => r.id !== id));
     } catch (err) {
       setError(err instanceof Error ? err.message : "delete failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function toggleExcluded(txId: string, excluded: boolean) {
+    setBusyId(txId);
+    try {
+      const res = await fetch(`/api/transactions/${txId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ excluded }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setRows((prev) =>
+        prev.map((r) => (r.id === txId ? { ...r, excluded } : r)),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "update failed");
     } finally {
       setBusyId(null);
     }
@@ -178,7 +198,7 @@ export function TransactionsList({
               const cat = t.category_id ? catMap.get(t.category_id) : null;
               const isEditing = editingId === t.id;
               return (
-                <tr key={t.id} className="border-b border-[var(--color-border)] last:border-0">
+                <tr key={t.id} className={`border-b border-[var(--color-border)] last:border-0 ${t.excluded ? "opacity-40" : ""}`}>
                   <td className="p-2 font-mono text-xs">{t.date}</td>
                   <td className="p-2">{t.description}</td>
                   <td className={`p-2 text-right font-mono text-xs ${amt < 0 ? "text-red-600" : "text-green-600"}`}>
@@ -214,7 +234,16 @@ export function TransactionsList({
                       </button>
                     )}
                   </td>
-                  <td className="p-2 text-center">
+                  <td className="p-2 text-center whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => toggleExcluded(t.id, !t.excluded)}
+                      disabled={busyId === t.id}
+                      className="text-xs text-[var(--color-muted-foreground)] hover:underline disabled:opacity-50"
+                    >
+                      {t.excluded ? "Include" : "Exclude"}
+                    </button>
+                    <span className="mx-1 text-[var(--color-border)]">|</span>
                     <button
                       type="button"
                       onClick={() => deleteRow(t.id)}

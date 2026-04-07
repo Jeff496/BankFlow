@@ -233,6 +233,7 @@ export type Database = {
           description: string;
           amount: string; // numeric → string in PostgREST
           category_id: string | null;
+          excluded: boolean;
           hash: string;
           created_at: string;
           updated_at: string;
@@ -246,6 +247,7 @@ export type Database = {
           description: string;
           amount: string | number;
           category_id?: string | null;
+          excluded?: boolean;
           hash: string;
           created_at?: string;
           updated_at?: string;
@@ -259,6 +261,7 @@ export type Database = {
           description?: string;
           amount?: string | number;
           category_id?: string | null;
+          excluded?: boolean;
           hash?: string;
           created_at?: string;
           updated_at?: string;
