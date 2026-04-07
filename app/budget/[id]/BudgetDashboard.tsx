@@ -346,6 +346,7 @@ export function BudgetDashboard({
             refreshKey={txRefresh}
             onClearFilter={() => { setSelectedCatIds(new Set()); setShowUncategorized(false); }}
             onDelete={deleteTransaction}
+            onRefreshSummary={() => void fetchSummary()}
           />
 
           <section className="mt-8">
@@ -761,6 +762,7 @@ function TransactionSection({
   refreshKey,
   onClearFilter,
   onDelete,
+  onRefreshSummary,
 }: {
   budgetId: string;
   range: DateRange | null;
@@ -771,6 +773,7 @@ function TransactionSection({
   refreshKey: number;
   onClearFilter: () => void;
   onDelete: (id: string) => void;
+  onRefreshSummary: () => void;
 }) {
   const [rows, setRows] = useState<TxRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -794,6 +797,7 @@ function TransactionSection({
         prev.map((r) => (r.id === txId ? { ...r, category_id: categoryId } : r)),
       );
       setEditingId(null);
+      onRefreshSummary();
     } catch {
       // ignore — errors shown elsewhere
     } finally {
@@ -813,6 +817,7 @@ function TransactionSection({
       setRows((prev) =>
         prev.map((r) => (r.id === txId ? { ...r, excluded } : r)),
       );
+      onRefreshSummary();
     } catch {
       // ignore
     } finally {
