@@ -33,15 +33,23 @@ async function handler(req: NextRequest): Promise<Response> {
   });
   const { budget_id, hashes } = bodySchema.parse(body);
 
-  const rows = await tracedQuery("transactions.dupes_check", () =>
-    supabase
-      .from("transactions")
-      .select("hash")
-      .eq("budget_id", budget_id)
-      .in("hash", hashes),
-  );
+  // Batch .in() to avoid exceeding PostgREST URL length limits
+  // (~26KB for 400 hashes would blow the ~8KB query string cap).
+  const BATCH = 100;
+  const allRows: Array<{ hash: string }> = [];
+  for (let i = 0; i < hashes.length; i += BATCH) {
+    const batch = hashes.slice(i, i + BATCH);
+    const rows = await tracedQuery("transactions.dupes_check", () =>
+      supabase
+        .from("transactions")
+        .select("hash")
+        .eq("budget_id", budget_id)
+        .in("hash", batch),
+    );
+    allRows.push(...rows);
+  }
 
-  return ok({ duplicate_hashes: rows.map((r) => r.hash) });
+  return ok({ duplicate_hashes: allRows.map((r) => r.hash) });
 }
 
 export const POST = withLogging(handler, "POST /api/uploads/duplicates");

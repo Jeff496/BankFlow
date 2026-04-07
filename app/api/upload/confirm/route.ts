@@ -56,15 +56,22 @@ async function handler(req: NextRequest): Promise<Response> {
   // Server-side dedup (defense in depth — client's preview should already
   // have filtered, but concurrent uploads or client bugs shouldn't poison
   // the budget).
+  // Batch .in() to avoid exceeding PostgREST URL length limits
   const proposedHashes = transactions.map((t) => t.hash);
-  const existing = await tracedQuery("transactions.check_dupes", () =>
-    supabase
-      .from("transactions")
-      .select("hash")
-      .eq("budget_id", budget_id)
-      .in("hash", proposedHashes),
-  );
-  const existingHashes = new Set(existing.map((r) => r.hash));
+  const DEDUP_BATCH = 100;
+  const existingRows: Array<{ hash: string }> = [];
+  for (let i = 0; i < proposedHashes.length; i += DEDUP_BATCH) {
+    const batch = proposedHashes.slice(i, i + DEDUP_BATCH);
+    const rows = await tracedQuery("transactions.check_dupes", () =>
+      supabase
+        .from("transactions")
+        .select("hash")
+        .eq("budget_id", budget_id)
+        .in("hash", batch),
+    );
+    existingRows.push(...rows);
+  }
+  const existingHashes = new Set(existingRows.map((r) => r.hash));
   const toInsert = transactions.filter((t) => !existingHashes.has(t.hash));
   const duplicatesFound = transactions.length - toInsert.length;
 
