@@ -6,7 +6,13 @@ import { ValidationError } from "@/lib/api/errors";
 import { created } from "@/lib/api/response";
 import { tracedQuery } from "@/lib/supabase/logged-client";
 import { log } from "@/lib/logger";
-import { categorize, prepareRules } from "@/lib/categorize";
+import {
+  categorize,
+  prepareRules,
+  buildHistoryMap,
+  categorizeFromHistory,
+} from "@/lib/categorize";
+import { categorizeBatchWithLLM } from "@/lib/categorize-llm";
 
 const MAX_ROWS = 5000;
 
@@ -94,37 +100,198 @@ async function handler(req: NextRequest): Promise<Response> {
       .single(),
   );
 
-  // Fetch categories to auto-assign via keyword matching. Ordered ASC by
-  // created_at so older categories take precedence (first-match-wins per
-  // mvp.md §Step 6). Empty keyword arrays / empty category list → nothing
-  // matches and all rows stay uncategorized.
+  // Fetch categories for auto-assignment. Ordered ASC by created_at so
+  // older categories take precedence in keyword matching (first-match-wins).
   const categories = await tracedQuery("categories.for_categorize", () =>
     supabase
       .from("categories")
-      .select("id, keywords, created_at")
+      .select("id, name, keywords, created_at")
       .eq("budget_id", budget_id)
       .order("created_at", { ascending: true }),
   );
   const rules = prepareRules(categories);
 
-  // Bulk insert transactions. PostgREST bulk insert is atomic per request —
-  // all rows succeed or none. On failure, delete the uploads row we just
-  // created so we don't leave an orphan "complete" upload with 0 rows.
-  let autoCategorized = 0;
-  const rows = toInsert.map((t) => {
-    const categoryId = categorize(t.description, rules);
-    if (categoryId) autoCategorized += 1;
-    return {
-      budget_id,
-      upload_id: upload.id,
-      uploaded_by: user.id,
-      date: t.date,
-      description: t.description,
-      amount: t.amount,
-      hash: t.hash,
-      category_id: categoryId,
-    };
-  });
+  // Fetch previously categorized transactions for history-based matching.
+  const history = await tracedQuery("transactions.for_history_match", () =>
+    supabase
+      .from("transactions")
+      .select("description, category_id")
+      .eq("budget_id", budget_id)
+      .not("category_id", "is", null),
+  );
+  const historyMap = buildHistoryMap(
+    history as Array<{ description: string; category_id: string }>,
+  );
+
+  // --- 3-tier categorization ---
+  let keywordCount = 0;
+  let historyCount = 0;
+  let llmCount = 0;
+  let newCategoriesCreated = 0;
+  const newCategoriesList: Array<{ id: string; name: string }> = [];
+
+  // Map to hold category assignment per index; null = uncategorized so far
+  const categoryIds: (string | null)[] = new Array(toInsert.length).fill(null);
+
+  // Collect uncategorized descriptions for LLM (deduplicated)
+  const uncategorizedDescs = new Set<string>();
+
+  // Tier 1 (keywords) + Tier 2 (history)
+  for (let i = 0; i < toInsert.length; i++) {
+    const desc = toInsert[i].description;
+
+    // Tier 1: keyword match
+    const kwMatch = categorize(desc, rules);
+    if (kwMatch) {
+      categoryIds[i] = kwMatch;
+      keywordCount++;
+      continue;
+    }
+
+    // Tier 2: history match
+    if (historyMap.size > 0) {
+      const histMatch = categorizeFromHistory(desc, historyMap);
+      if (histMatch) {
+        categoryIds[i] = histMatch;
+        historyCount++;
+        continue;
+      }
+    }
+
+    uncategorizedDescs.add(desc);
+  }
+
+  // Tier 3: LLM batch categorization (only for unique uncategorized descriptions)
+  if (uncategorizedDescs.size > 0 && categories.length > 0) {
+    const llmResult = await categorizeBatchWithLLM(
+      Array.from(uncategorizedDescs),
+      categories.map((c) => ({ id: c.id, name: c.name })),
+    );
+
+    // Create new categories suggested by the LLM
+    const newCatNameToId = new Map<string, string>();
+    if (llmResult.newCategories.size > 0) {
+      // Deduplicate suggested names (case-insensitive)
+      const uniqueNames = new Map<string, string>();
+      for (const name of llmResult.newCategories.values()) {
+        const key = name.toLowerCase();
+        if (!uniqueNames.has(key)) uniqueNames.set(key, name);
+      }
+
+      // Bulk-insert new categories
+      const newCatRows = Array.from(uniqueNames.values()).map((name) => ({
+        budget_id,
+        name,
+        keywords: [] as string[],
+      }));
+
+      try {
+        const inserted = await tracedQuery("categories.create_from_llm", () =>
+          supabase.from("categories").insert(newCatRows).select("id, name"),
+        );
+        for (const cat of inserted) {
+          newCatNameToId.set(cat.name.toLowerCase(), cat.id);
+          newCategoriesList.push({ id: cat.id, name: cat.name });
+        }
+        newCategoriesCreated = inserted.length;
+      } catch (err) {
+        log().error({
+          event: "llm.categories.create_failed",
+          reason: err instanceof Error ? err.message : "unknown",
+        });
+        // Continue without new categories — assignments to existing ones still apply
+      }
+    }
+
+    // Apply LLM results back to uncategorized transactions
+    for (let i = 0; i < toInsert.length; i++) {
+      if (categoryIds[i] !== null) continue; // already categorized by Tier 1 or 2
+
+      const desc = toInsert[i].description;
+
+      // Check assignment to existing category
+      const existingId = llmResult.assignments.get(desc);
+      if (existingId) {
+        categoryIds[i] = existingId;
+        llmCount++;
+        continue;
+      }
+
+      // Check new category suggestion
+      const newCatName = llmResult.newCategories.get(desc);
+      if (newCatName) {
+        const newId = newCatNameToId.get(newCatName.toLowerCase());
+        if (newId) {
+          categoryIds[i] = newId;
+          llmCount++;
+        }
+      }
+    }
+  } else if (uncategorizedDescs.size > 0 && categories.length === 0) {
+    // No existing categories — let LLM create from scratch
+    const llmResult = await categorizeBatchWithLLM(
+      Array.from(uncategorizedDescs),
+      [],
+    );
+
+    const newCatNameToId = new Map<string, string>();
+    if (llmResult.newCategories.size > 0) {
+      const uniqueNames = new Map<string, string>();
+      for (const name of llmResult.newCategories.values()) {
+        const key = name.toLowerCase();
+        if (!uniqueNames.has(key)) uniqueNames.set(key, name);
+      }
+
+      const newCatRows = Array.from(uniqueNames.values()).map((name) => ({
+        budget_id,
+        name,
+        keywords: [] as string[],
+      }));
+
+      try {
+        const inserted = await tracedQuery("categories.create_from_llm", () =>
+          supabase.from("categories").insert(newCatRows).select("id, name"),
+        );
+        for (const cat of inserted) {
+          newCatNameToId.set(cat.name.toLowerCase(), cat.id);
+          newCategoriesList.push({ id: cat.id, name: cat.name });
+        }
+        newCategoriesCreated = inserted.length;
+      } catch (err) {
+        log().error({
+          event: "llm.categories.create_failed",
+          reason: err instanceof Error ? err.message : "unknown",
+        });
+      }
+    }
+
+    for (let i = 0; i < toInsert.length; i++) {
+      if (categoryIds[i] !== null) continue;
+      const desc = toInsert[i].description;
+      const newCatName = llmResult.newCategories.get(desc);
+      if (newCatName) {
+        const newId = newCatNameToId.get(newCatName.toLowerCase());
+        if (newId) {
+          categoryIds[i] = newId;
+          llmCount++;
+        }
+      }
+    }
+  }
+
+  const autoCategorized = keywordCount + historyCount + llmCount;
+
+  // Build final insert rows
+  const rows = toInsert.map((t, i) => ({
+    budget_id,
+    upload_id: upload.id,
+    uploaded_by: user.id,
+    date: t.date,
+    description: t.description,
+    amount: t.amount,
+    hash: t.hash,
+    category_id: categoryIds[i],
+  }));
 
   try {
     await tracedQuery("transactions.bulk_insert", () =>
@@ -138,9 +305,6 @@ async function handler(req: NextRequest): Promise<Response> {
       reason: err instanceof Error ? err.message : "unknown",
       stack: err instanceof Error ? err.stack : undefined,
     });
-    // Best-effort cleanup. Uploads cascade-deletes transactions, so even
-    // partial inserts (shouldn't happen with atomic bulk insert, but still)
-    // are cleaned up.
     await supabase.from("uploads").delete().eq("id", upload.id);
     throw err;
   }
@@ -152,12 +316,21 @@ async function handler(req: NextRequest): Promise<Response> {
     transactionCount: toInsert.length,
     duplicatesFound,
     autoCategorized,
+    autoKeywordCount: keywordCount,
+    autoHistoryCount: historyCount,
+    autoLlmCount: llmCount,
+    newCategoriesCreated,
   });
 
   return created({
     upload,
     inserted_count: toInsert.length,
     auto_categorized_count: autoCategorized,
+    auto_keyword_count: keywordCount,
+    auto_history_count: historyCount,
+    auto_llm_count: llmCount,
+    new_categories_created: newCategoriesCreated,
+    new_categories: newCategoriesList,
     skipped_duplicates: duplicatesFound,
   });
 }

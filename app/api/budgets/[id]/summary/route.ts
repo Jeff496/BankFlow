@@ -69,18 +69,19 @@ async function handler(
     ),
   ]);
 
-  // Aggregate
+  // Aggregate — net spending includes positive amounts (refunds, income)
+  // so they offset expenses within the same category/budget.
   let total_spent = 0;
   let uncategorized_count = 0;
   const perCategory = new Map<string, { spent: number; count: number }>();
   for (const t of transactions) {
     const amt = Number(t.amount);
-    if (amt < 0) total_spent += Math.abs(amt);
+    total_spent += Math.abs(amt) * (amt < 0 ? 1 : -1); // expenses add, income subtracts
     if (t.category_id === null) {
       uncategorized_count += 1;
     } else {
       const entry = perCategory.get(t.category_id) ?? { spent: 0, count: 0 };
-      if (amt < 0) entry.spent += Math.abs(amt);
+      entry.spent += Math.abs(amt) * (amt < 0 ? 1 : -1);
       entry.count += 1;
       perCategory.set(t.category_id, entry);
     }

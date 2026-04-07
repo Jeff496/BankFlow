@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { reportClientError } from "@/lib/client-logger";
 
 interface Category {
@@ -27,15 +28,17 @@ export function TransactionsList({
   budgetId: string;
   categories: Category[];
 }) {
+  const searchParams = useSearchParams();
+
   const [rows, setRows] = useState<Transaction[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uncategorized, setUncategorized] = useState(false);
-  const [filterCat, setFilterCat] = useState("");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  const [filterCat, setFilterCat] = useState(searchParams.get("category_id") ?? "");
+  const [startDate, setStartDate] = useState(searchParams.get("start_date") ?? "");
+  const [endDate, setEndDate] = useState(searchParams.get("end_date") ?? "");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 

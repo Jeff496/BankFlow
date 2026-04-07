@@ -38,7 +38,7 @@ interface Summary {
   }>;
 }
 
-type DatePreset = "current_month" | "last_month" | "custom";
+type DatePreset = "current_month" | "last_month" | "all_time" | "custom";
 
 interface DateRange {
   start: string;
@@ -66,6 +66,8 @@ export function BudgetDashboard({
   const [addCatOpen, setAddCatOpen] = useState(false);
   const [editCat, setEditCat] = useState<Summary["categories"][number] | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [selectedCatIds, setSelectedCatIds] = useState<Set<string>>(new Set());
+  const [txRefresh, setTxRefresh] = useState(0);
 
   // Set default range (current month in browser TZ) once on mount
   useEffect(() => {
@@ -129,6 +131,7 @@ export function BudgetDashboard({
       const res = await fetch(`/api/transactions/${txId}`, { method: "DELETE" });
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       void fetchSummary();
+      setTxRefresh((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "delete failed");
     }
@@ -192,7 +195,11 @@ export function BudgetDashboard({
       {summary && (
         <>
           <section className="mt-6">
-            <MetricCards metrics={summary.metrics} />
+            <MetricCards
+              metrics={summary.metrics}
+              categories={summary.categories}
+              selectedCatIds={selectedCatIds}
+            />
           </section>
 
           <section className="mt-8">
@@ -210,6 +217,15 @@ export function BudgetDashboard({
             {summary.categories.length > 0 ? (
               <CategoryGrid
                 categories={summary.categories}
+                selectedIds={selectedCatIds}
+                onToggle={(id) =>
+                  setSelectedCatIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  })
+                }
                 onEdit={(c) => setEditCat(c)}
                 onDelete={archived ? undefined : deleteCategory}
               />
@@ -223,33 +239,16 @@ export function BudgetDashboard({
             )}
           </section>
 
-          <section className="mt-8">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Recent transactions</h2>
-              {summary.metrics.transaction_count > 0 && (
-                <Link
-                  href={`/budget/${budgetId}/transactions`}
-                  className="text-sm text-[var(--color-primary)] hover:underline"
-                >
-                  View all →
-                </Link>
-              )}
-            </div>
-            {summary.recent_transactions.length > 0 ? (
-              <RecentTransactions
-                rows={summary.recent_transactions}
-                categories={summary.categories}
-                onDelete={archived ? undefined : deleteTransaction}
-              />
-            ) : (
-              <EmptyState
-                message="No transactions in this date range. Upload a CSV to get started."
-                actionLabel="Upload CSV"
-                href={`/budget/${budgetId}/upload`}
-                disabled={archived}
-              />
-            )}
-          </section>
+          <TransactionSection
+            budgetId={budgetId}
+            range={range}
+            selectedCatIds={selectedCatIds}
+            categories={summary.categories}
+            archived={archived}
+            refreshKey={txRefresh}
+            onClearFilter={() => setSelectedCatIds(new Set())}
+            onDelete={deleteTransaction}
+          />
 
           <section className="mt-8">
             <UploadZone budgetId={budgetId} disabled={archived} />
@@ -321,29 +320,22 @@ function DateFilter({
   onChange: (r: DateRange) => void;
 }) {
   if (!range) return null;
+  const presetClass = (p: DatePreset) =>
+    `rounded-lg px-3 py-1.5 ${
+      range.preset === p
+        ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]"
+        : "border border-[var(--color-border)] hover:bg-[var(--color-muted)]"
+    }`;
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">
-      <button
-        type="button"
-        onClick={() => onChange(currentMonthRange())}
-        className={`rounded-lg px-3 py-1.5 ${
-          range.preset === "current_month"
-            ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]"
-            : "border border-[var(--color-border)] hover:bg-[var(--color-muted)]"
-        }`}
-      >
+      <button type="button" onClick={() => onChange(currentMonthRange())} className={presetClass("current_month")}>
         Current month
       </button>
-      <button
-        type="button"
-        onClick={() => onChange(lastMonthRange())}
-        className={`rounded-lg px-3 py-1.5 ${
-          range.preset === "last_month"
-            ? "bg-[var(--color-primary)] text-[var(--color-primary-foreground)]"
-            : "border border-[var(--color-border)] hover:bg-[var(--color-muted)]"
-        }`}
-      >
+      <button type="button" onClick={() => onChange(lastMonthRange())} className={presetClass("last_month")}>
         Last month
+      </button>
+      <button type="button" onClick={() => onChange(allTimeRange())} className={presetClass("all_time")}>
+        All time
       </button>
       <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-2 py-1">
         <input
@@ -370,39 +362,72 @@ function DateFilter({
   );
 }
 
-function MetricCards({ metrics }: { metrics: Summary["metrics"] }) {
+function MetricCards({
+  metrics,
+  categories,
+  selectedCatIds,
+}: {
+  metrics: Summary["metrics"];
+  categories: Summary["categories"];
+  selectedCatIds: Set<string>;
+}) {
+  // When categories are selected, compute filtered metrics from per-category data
+  const filtered = selectedCatIds.size > 0;
+  const selectedCats = filtered
+    ? categories.filter((c) => selectedCatIds.has(c.id))
+    : [];
+
+  const totalSpent = filtered
+    ? selectedCats.reduce((sum, c) => sum + c.spent, 0)
+    : metrics.total_spent;
+  const totalLimit = filtered
+    ? selectedCats.reduce((sum, c) => sum + (c.monthly_limit ?? 0), 0)
+    : metrics.total_limit;
+  const remaining = totalLimit - totalSpent;
+  const txCount = filtered
+    ? selectedCats.reduce((sum, c) => sum + c.transaction_count, 0)
+    : metrics.transaction_count;
+
   const pctRemaining =
-    metrics.total_limit > 0
-      ? Math.max(0, Math.round((metrics.remaining / metrics.total_limit) * 100))
+    totalLimit > 0
+      ? Math.max(0, Math.round((remaining / totalLimit) * 100))
       : null;
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
       <MetricCard
         label="Total spent"
-        value={formatAmount(metrics.total_spent)}
+        value={formatAmount(totalSpent)}
         subtext={
-          metrics.total_limit > 0
-            ? `of ${formatAmount(metrics.total_limit)} limit`
+          totalLimit > 0
+            ? `of ${formatAmount(totalLimit)} limit`
             : "no limits set"
         }
       />
       <MetricCard
         label="Remaining"
-        value={formatAmount(metrics.remaining)}
+        value={formatAmount(remaining)}
         subtext={pctRemaining !== null ? `${pctRemaining}% remaining` : "—"}
-        valueClass={metrics.remaining < 0 ? "text-red-600" : undefined}
+        valueClass={remaining < 0 ? "text-red-600" : undefined}
       />
       <MetricCard
         label="Transactions"
-        value={String(metrics.transaction_count)}
-        subtext="in date range"
+        value={String(txCount)}
+        subtext={filtered ? "in selected categories" : "in date range"}
       />
-      <MetricCard
-        label="Uncategorized"
-        value={String(metrics.uncategorized_count)}
-        subtext="needs attention"
-        valueClass={metrics.uncategorized_count > 0 ? "text-yellow-600" : undefined}
-      />
+      {filtered ? (
+        <MetricCard
+          label="Categories"
+          value={String(selectedCatIds.size)}
+          subtext={`of ${categories.length} selected`}
+        />
+      ) : (
+        <MetricCard
+          label="Uncategorized"
+          value={String(metrics.uncategorized_count)}
+          subtext="needs attention"
+          valueClass={metrics.uncategorized_count > 0 ? "text-yellow-600" : undefined}
+        />
+      )}
     </div>
   );
 }
@@ -429,17 +454,28 @@ function MetricCard({
 
 function CategoryGrid({
   categories,
+  selectedIds,
+  onToggle,
   onEdit,
   onDelete,
 }: {
   categories: Summary["categories"];
+  selectedIds: Set<string>;
+  onToggle: (id: string) => void;
   onEdit: (c: Summary["categories"][number]) => void;
   onDelete?: (id: string) => void;
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
       {categories.map((c) => (
-        <CategoryCard key={c.id} category={c} onEdit={onEdit} onDelete={onDelete} />
+        <CategoryCard
+          key={c.id}
+          category={c}
+          selected={selectedIds.has(c.id)}
+          onToggle={onToggle}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
       ))}
     </div>
   );
@@ -447,10 +483,14 @@ function CategoryGrid({
 
 function CategoryCard({
   category,
+  selected,
+  onToggle,
   onEdit,
   onDelete,
 }: {
   category: Summary["categories"][number];
+  selected: boolean;
+  onToggle: (id: string) => void;
   onEdit: (c: Summary["categories"][number]) => void;
   onDelete?: (id: string) => void;
 }) {
@@ -459,10 +499,15 @@ function CategoryCard({
       ? (category.spent / category.monthly_limit) * 100
       : null;
   const overBudget = pct !== null && pct > 100;
+
   return (
     <div
-      className="cursor-pointer rounded-xl border border-[var(--color-border)] p-3 transition-colors hover:bg-[var(--color-muted)]"
-      onClick={() => onEdit(category)}
+      className={`cursor-pointer rounded-xl border-2 p-3 transition-colors hover:bg-[var(--color-muted)] ${
+        selected
+          ? "border-[var(--color-primary)] bg-[var(--color-muted)]"
+          : "border-[var(--color-border)]"
+      }`}
+      onClick={() => onToggle(category.id)}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0">
@@ -500,61 +545,227 @@ function CategoryCard({
       ) : (
         <p className="mt-2 text-xs text-[var(--color-muted-foreground)]">No limit set</p>
       )}
-      {onDelete && (
+      <div className="mt-2 flex items-center gap-3">
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            onDelete(category.id);
+            onEdit(category);
           }}
-          className="mt-2 text-xs text-red-600 hover:underline"
+          className="text-xs text-[var(--color-primary)] hover:underline"
         >
-          Delete
+          Edit
         </button>
-      )}
+        {onDelete && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(category.id);
+            }}
+            className="text-xs text-red-600 hover:underline"
+          >
+            Delete
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function RecentTransactions({
-  rows,
+interface TxRow {
+  id: string;
+  date: string;
+  description: string;
+  amount: number | string;
+  category_id: string | null;
+}
+
+const TX_PAGE_SIZE = 50;
+
+function TransactionSection({
+  budgetId,
+  range,
+  selectedCatIds,
   categories,
+  archived,
+  refreshKey,
+  onClearFilter,
   onDelete,
 }: {
-  rows: Summary["recent_transactions"];
+  budgetId: string;
+  range: DateRange | null;
+  selectedCatIds: Set<string>;
   categories: Summary["categories"];
-  onDelete?: (id: string) => void;
+  archived: boolean;
+  refreshKey: number;
+  onClearFilter: () => void;
+  onDelete: (id: string) => void;
 }) {
+  const [rows, setRows] = useState<TxRow[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+
   const catMap = new Map(categories.map((c) => [c.id, c]));
+
+  const fetchPage = useCallback(
+    async (cursorVal: string | null, append: boolean) => {
+      if (!range) return;
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({
+          budget_id: budgetId,
+          limit: String(TX_PAGE_SIZE),
+          start_date: range.start,
+          end_date: range.end,
+        });
+        if (cursorVal) params.set("cursor", cursorVal);
+        // If exactly one category selected, use server-side filter
+        if (selectedCatIds.size === 1) {
+          params.set("category_id", [...selectedCatIds][0]);
+        }
+        const res = await fetch(`/api/transactions?${params}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setRows((prev) => (append ? [...prev, ...data.transactions] : data.transactions));
+        setCursor(data.nextCursor);
+        setHasMore(!!data.nextCursor);
+      } catch {
+        // ignore — errors shown elsewhere
+      } finally {
+        setLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [budgetId, range, selectedCatIds, refreshKey],
+  );
+
+  useEffect(() => {
+    void fetchPage(null, false);
+  }, [fetchPage]);
+
+  // For multi-category filter, filter client-side
+  const filtered =
+    selectedCatIds.size > 1
+      ? rows.filter((t) => t.category_id !== null && selectedCatIds.has(t.category_id))
+      : rows;
+
   return (
-    <>
-      {/* Desktop: table */}
-      <div className="hidden overflow-x-auto rounded-lg border border-[var(--color-border)] md:block">
-        <table className="w-full text-sm">
-          <thead className="bg-[var(--color-muted)]">
-            <tr>
-              <th className="p-2 text-left">Date</th>
-              <th className="p-2 text-left">Description</th>
-              <th className="p-2 text-right">Amount</th>
-              <th className="p-2 text-left">Category</th>
-              {onDelete && <th className="p-2" />}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((t) => {
+    <section className="mt-8">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-lg font-semibold">
+          {selectedCatIds.size > 0 ? "Filtered transactions" : "Transactions"}
+        </h2>
+        {selectedCatIds.size > 0 && (
+          <button
+            type="button"
+            onClick={onClearFilter}
+            className="text-xs text-[var(--color-muted-foreground)] hover:underline"
+          >
+            Clear filter
+          </button>
+        )}
+      </div>
+
+      {filtered.length === 0 && !loading ? (
+        selectedCatIds.size > 0 ? (
+          <p className="rounded-xl border border-dashed border-[var(--color-border)] p-8 text-center text-sm text-[var(--color-muted-foreground)]">
+            No transactions match the selected categories in this date range.
+          </p>
+        ) : (
+          <EmptyState
+            message="No transactions in this date range. Upload a CSV to get started."
+            actionLabel="Upload CSV"
+            href={`/budget/${budgetId}/upload`}
+            disabled={archived}
+          />
+        )
+      ) : (
+        <>
+          {/* Desktop: table */}
+          <div className="hidden overflow-x-auto rounded-lg border border-[var(--color-border)] md:block">
+            <table className="w-full text-sm">
+              <thead className="bg-[var(--color-muted)]">
+                <tr>
+                  <th className="p-2 text-left">Date</th>
+                  <th className="p-2 text-left">Description</th>
+                  <th className="p-2 text-right">Amount</th>
+                  <th className="p-2 text-left">Category</th>
+                  {!archived && <th className="p-2" />}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((t) => {
+                  const amt = Number(t.amount);
+                  return (
+                    <tr key={t.id} className="border-b border-[var(--color-border)] last:border-0">
+                      <td className="p-2 font-mono text-xs">{t.date}</td>
+                      <td className="p-2">{t.description}</td>
+                      <td
+                        className={`p-2 text-right font-mono text-xs ${
+                          amt < 0 ? "text-red-600" : "text-green-600"
+                        }`}
+                      >
+                        {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
+                      </td>
+                      <td className="p-2">
+                        {t.category_id ? (
+                          <CategoryBadge cat={catMap.get(t.category_id)} />
+                        ) : (
+                          <span className="rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)]">
+                            Uncategorized
+                          </span>
+                        )}
+                      </td>
+                      {!archived && (
+                        <td className="p-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => onDelete(t.id)}
+                            className="text-xs text-red-600 hover:underline"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile: card list */}
+          <div className="space-y-2 md:hidden">
+            {filtered.map((t) => {
               const amt = Number(t.amount);
               return (
-                <tr key={t.id} className="border-b border-[var(--color-border)] last:border-0">
-                  <td className="p-2 font-mono text-xs">{t.date}</td>
-                  <td className="p-2">{t.description}</td>
-                  <td
-                    className={`p-2 text-right font-mono text-xs ${
-                      amt < 0 ? "text-red-600" : "text-green-600"
-                    }`}
-                  >
-                    {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
-                  </td>
-                  <td className="p-2">
+                <div
+                  key={t.id}
+                  className="flex items-start justify-between rounded-lg border border-[var(--color-border)] p-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{t.description}</p>
+                    <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">{t.date}</p>
+                    {!archived && (
+                      <button
+                        type="button"
+                        onClick={() => onDelete(t.id)}
+                        className="mt-1 text-xs text-red-600 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span
+                      className={`font-mono text-xs ${
+                        amt < 0 ? "text-red-600" : "text-green-600"
+                      }`}
+                    >
+                      {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
+                    </span>
                     {t.category_id ? (
                       <CategoryBadge cat={catMap.get(t.category_id)} />
                     ) : (
@@ -562,68 +773,31 @@ function RecentTransactions({
                         Uncategorized
                       </span>
                     )}
-                  </td>
-                  {onDelete && (
-                    <td className="p-2 text-center">
-                      <button
-                        type="button"
-                        onClick={() => onDelete(t.id)}
-                        className="text-xs text-red-600 hover:underline"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  )}
-                </tr>
+                  </div>
+                </div>
               );
             })}
-          </tbody>
-        </table>
-      </div>
+          </div>
 
-      {/* Mobile: card list */}
-      <div className="space-y-2 md:hidden">
-        {rows.map((t) => {
-          const amt = Number(t.amount);
-          return (
-            <div
-              key={t.id}
-              className="flex items-start justify-between rounded-lg border border-[var(--color-border)] p-3"
-            >
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{t.description}</p>
-                <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">{t.date}</p>
-                {onDelete && (
-                  <button
-                    type="button"
-                    onClick={() => onDelete(t.id)}
-                    className="mt-1 text-xs text-red-600 hover:underline"
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-col items-end gap-1">
-                <span
-                  className={`font-mono text-xs ${
-                    amt < 0 ? "text-red-600" : "text-green-600"
-                  }`}
-                >
-                  {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
-                </span>
-                {t.category_id ? (
-                  <CategoryBadge cat={catMap.get(t.category_id)} />
-                ) : (
-                  <span className="rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)]">
-                    Uncategorized
-                  </span>
-                )}
-              </div>
+          {hasMore && (
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={() => void fetchPage(cursor, true)}
+                disabled={loading}
+                className="rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm hover:bg-[var(--color-muted)] disabled:opacity-50"
+              >
+                {loading ? "Loading…" : "Load more"}
+              </button>
             </div>
-          );
-        })}
-      </div>
-    </>
+          )}
+
+          {loading && rows.length === 0 && (
+            <p className="mt-4 text-center text-sm text-[var(--color-muted-foreground)]">Loading…</p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1358,4 +1532,8 @@ function lastMonthRange(): DateRange {
   const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const end = new Date(now.getFullYear(), now.getMonth(), 0);
   return { start: ymd(start), end: ymd(end), preset: "last_month" };
+}
+
+function allTimeRange(): DateRange {
+  return { start: "2000-01-01", end: ymd(new Date()), preset: "all_time" };
 }

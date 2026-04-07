@@ -25,10 +25,18 @@ interface SavedMapping {
   };
 }
 
+interface NewCategory {
+  id: string;
+  name: string;
+}
+
 interface ImportResult {
   uploadId: string | null;
   inserted: number;
   skipped: number;
+  autoCategorized: number;
+  newCategoriesCreated: number;
+  newCategories: NewCategory[];
 }
 
 export function UploadFlow({
@@ -223,6 +231,9 @@ export function UploadFlow({
         uploadId: data.upload?.id ?? null,
         inserted: data.inserted_count ?? 0,
         skipped: data.skipped_duplicates ?? 0,
+        autoCategorized: data.auto_categorized_count ?? 0,
+        newCategoriesCreated: data.new_categories_created ?? 0,
+        newCategories: data.new_categories ?? [],
       });
 
       // Save mapping if user asked
@@ -328,7 +339,7 @@ export function UploadFlow({
       )}
 
       {stage === "done" && importResult && (
-        <DoneStep result={importResult} onAnother={resetAll} />
+        <DoneStep result={importResult} onAnother={resetAll} budgetId={budgetId} />
       )}
     </div>
   );
@@ -664,18 +675,140 @@ function PreviewStep({
 function DoneStep({
   result,
   onAnother,
+  budgetId,
 }: {
   result: ImportResult;
   onAnother: () => void;
+  budgetId: string;
 }) {
+  const [cats, setCats] = useState<NewCategory[]>(result.newCategories);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function renameCategory(id: string, name: string) {
+    if (!name.trim()) return;
+    setBusy(id);
+    try {
+      const res = await fetch(`/api/categories/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setCats((prev) => prev.map((c) => (c.id === id ? { ...c, name: name.trim() } : c)));
+      setRenamingId(null);
+    } catch (err) {
+      reportClientError(err, { scope: "upload.rename_category" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteCategory(id: string) {
+    setBusy(id);
+    try {
+      const res = await fetch(`/api/categories/${id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      setCats((prev) => prev.filter((c) => c.id !== id));
+    } catch (err) {
+      reportClientError(err, { scope: "upload.delete_category" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
-    <div className="space-y-4 rounded-lg border border-[var(--color-border)] p-6 text-center">
-      <p className="text-2xl font-bold">Import complete</p>
-      <p className="text-sm">
-        {result.inserted} transaction{result.inserted === 1 ? "" : "s"} imported
-        {result.skipped > 0 && `, ${result.skipped} skipped as duplicates`}.
-      </p>
+    <div className="space-y-4 rounded-lg border border-[var(--color-border)] p-6">
+      <div className="text-center">
+        <p className="text-2xl font-bold">Import complete</p>
+        <p className="mt-1 text-sm">
+          {result.inserted} transaction{result.inserted === 1 ? "" : "s"} imported
+          {result.autoCategorized > 0 && (
+            <> ({result.autoCategorized} auto-categorized)</>
+          )}
+          {result.skipped > 0 && `, ${result.skipped} skipped as duplicates`}.
+        </p>
+      </div>
+
+      {cats.length > 0 && (
+        <div className="rounded-lg border border-[var(--color-border)] p-4">
+          <p className="mb-3 text-sm font-medium">
+            New categories created — rename or remove as needed:
+          </p>
+          <div className="space-y-2">
+            {cats.map((cat) => (
+              <div
+                key={cat.id}
+                className="flex items-center gap-2 rounded-md border border-[var(--color-border)] px-3 py-2"
+              >
+                {renamingId === cat.id ? (
+                  <form
+                    className="flex flex-1 items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void renameCategory(cat.id, renameValue);
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      className="flex-1 rounded border border-[var(--color-border)] bg-transparent px-2 py-1 text-sm outline-none focus:border-[var(--color-primary)]"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy === cat.id}
+                      className="text-xs text-[var(--color-primary)] hover:underline disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRenamingId(null)}
+                      className="text-xs text-[var(--color-muted-foreground)] hover:underline"
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <span className="flex-1 text-sm">{cat.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRenamingId(cat.id);
+                        setRenameValue(cat.name);
+                      }}
+                      disabled={busy === cat.id}
+                      className="text-xs text-[var(--color-primary)] hover:underline disabled:opacity-50"
+                    >
+                      Rename
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteCategory(cat.id)}
+                      disabled={busy === cat.id}
+                      className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-center gap-2">
+        <a
+          href={`/budget/${budgetId}`}
+          className="rounded-lg bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-primary-foreground)] hover:opacity-90"
+        >
+          View budget
+        </a>
         <button
           type="button"
           onClick={onAnother}
