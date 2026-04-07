@@ -26,6 +26,7 @@ interface Summary {
     id: string;
     name: string;
     type: string;
+    excluded: boolean;
     color: string;
     monthly_limit: number | null;
     spent: number;
@@ -118,6 +119,20 @@ export function BudgetDashboard({
       reportClientError(err, { scope: "budget.archive" });
     } finally {
       setArchiving(false);
+    }
+  }
+
+  async function toggleCategoryExcluded(catId: string, excluded: boolean) {
+    try {
+      const res = await fetch(`/api/categories/${catId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ excluded }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      void fetchSummary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "update failed");
     }
   }
 
@@ -272,6 +287,7 @@ export function BudgetDashboard({
                 }}
                 onEdit={(c) => setEditCat(c)}
                 onDelete={archived ? undefined : deleteCategory}
+                onToggleExcluded={archived ? undefined : toggleCategoryExcluded}
               />
             ) : (
               <EmptyState
@@ -311,6 +327,7 @@ export function BudgetDashboard({
                 }}
                 onEdit={(c) => setEditCat(c)}
                 onDelete={archived ? undefined : deleteCategory}
+                onToggleExcluded={archived ? undefined : toggleCategoryExcluded}
               />
             ) : (
               <p className="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-muted-foreground)]">
@@ -589,12 +606,14 @@ function CategoryGrid({
   onToggle,
   onEdit,
   onDelete,
+  onToggleExcluded,
 }: {
   categories: Summary["categories"];
   selectedIds: Set<string>;
   onToggle: (id: string) => void;
   onEdit: (c: Summary["categories"][number]) => void;
   onDelete?: (id: string) => void;
+  onToggleExcluded?: (id: string, excluded: boolean) => void;
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
@@ -606,6 +625,7 @@ function CategoryGrid({
           onToggle={onToggle}
           onEdit={onEdit}
           onDelete={onDelete}
+          onToggleExcluded={onToggleExcluded}
         />
       ))}
     </div>
@@ -618,12 +638,14 @@ function CategoryCard({
   onToggle,
   onEdit,
   onDelete,
+  onToggleExcluded,
 }: {
   category: Summary["categories"][number];
   selected: boolean;
   onToggle: (id: string) => void;
   onEdit: (c: Summary["categories"][number]) => void;
   onDelete?: (id: string) => void;
+  onToggleExcluded?: (id: string, excluded: boolean) => void;
 }) {
   const pct =
     category.monthly_limit && category.monthly_limit > 0
@@ -634,9 +656,11 @@ function CategoryCard({
   return (
     <div
       className={`cursor-pointer rounded-xl border-2 p-3 transition-colors hover:bg-[var(--color-muted)] ${
-        selected
-          ? "border-[var(--color-primary)] bg-[var(--color-muted)]"
-          : "border-[var(--color-border)]"
+        category.excluded
+          ? "opacity-40 border-[var(--color-border)]"
+          : selected
+            ? "border-[var(--color-primary)] bg-[var(--color-muted)]"
+            : "border-[var(--color-border)]"
       }`}
       onClick={() => onToggle(category.id)}
     >
@@ -687,6 +711,18 @@ function CategoryCard({
         >
           Edit
         </button>
+        {onToggleExcluded && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExcluded(category.id, !category.excluded);
+            }}
+            className="text-xs text-[var(--color-muted-foreground)] hover:underline"
+          >
+            {category.excluded ? "Include" : "Exclude"}
+          </button>
+        )}
         {onDelete && (
           <button
             type="button"

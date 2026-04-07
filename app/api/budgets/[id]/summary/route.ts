@@ -53,7 +53,7 @@ async function handler(
     tracedQuery("dashboard.categories", () =>
       supabase
         .from("categories")
-        .select("id, name, type, color, monthly_limit, created_at")
+        .select("id, name, type, excluded, color, monthly_limit, created_at")
         .eq("budget_id", id)
         .order("created_at", { ascending: true }),
     ),
@@ -69,10 +69,12 @@ async function handler(
     ),
   ]);
 
-  // Build a set of income category IDs for fast lookup
+  // Build lookup maps for category type and excluded status
   const catTypeMap = new Map<string, string>();
+  const excludedCatIds = new Set<string>();
   for (const c of categories) {
     catTypeMap.set(c.id, c.type ?? "expense");
+    if (c.excluded) excludedCatIds.add(c.id);
   }
 
   // Aggregate — separate income and expense tracking.
@@ -83,7 +85,7 @@ async function handler(
   let excluded_count = 0;
   const perCategory = new Map<string, { spent: number; count: number }>();
   for (const t of transactions) {
-    if (t.excluded) {
+    if (t.excluded || (t.category_id && excludedCatIds.has(t.category_id))) {
       excluded_count += 1;
       continue;
     }
@@ -114,13 +116,14 @@ async function handler(
   const categoriesOut = categories.map((c) => {
     const lim = c.monthly_limit !== null ? Number(c.monthly_limit) : null;
     const isIncome = (c.type ?? "expense") === "income";
-    // Only expense categories count toward budget limits
-    if (lim !== null && !isIncome) total_limit += lim;
+    // Only non-excluded expense categories count toward budget limits
+    if (lim !== null && !isIncome && !c.excluded) total_limit += lim;
     const agg = perCategory.get(c.id) ?? { spent: 0, count: 0 };
     return {
       id: c.id,
       name: c.name,
       type: c.type ?? "expense",
+      excluded: c.excluded ?? false,
       color: c.color,
       monthly_limit: lim,
       spent: round2(agg.spent),
