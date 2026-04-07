@@ -72,6 +72,8 @@ export function BudgetDashboard({
   const [selectedCatIds, setSelectedCatIds] = useState<Set<string>>(new Set());
   const [showUncategorized, setShowUncategorized] = useState(false);
   const [txRefresh, setTxRefresh] = useState(0);
+  const [recategorizing, setRecategorizing] = useState(false);
+  const [recatResult, setRecatResult] = useState<string | null>(null);
 
   // Set default range (current month in browser TZ) once on mount
   useEffect(() => {
@@ -126,6 +128,32 @@ export function BudgetDashboard({
       void fetchSummary();
     } catch (err) {
       setError(err instanceof Error ? err.message : "delete failed");
+    }
+  }
+
+  async function recategorize() {
+    setRecategorizing(true);
+    setRecatResult(null);
+    try {
+      const res = await fetch("/api/transactions/recategorize", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ budget_id: budgetId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRecatResult(
+        data.recategorized_count > 0
+          ? `${data.recategorized_count} transaction${data.recategorized_count === 1 ? "" : "s"} categorized`
+          : "No matches found",
+      );
+      void fetchSummary();
+      setTxRefresh((n) => n + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "recategorize failed");
+      reportClientError(err, { scope: "recategorize" });
+    } finally {
+      setRecategorizing(false);
     }
   }
 
@@ -208,6 +236,10 @@ export function BudgetDashboard({
                 setShowUncategorized((prev) => !prev);
                 setSelectedCatIds(new Set());
               }}
+              onRecategorize={recategorize}
+              recategorizing={recategorizing}
+              recatResult={recatResult}
+              archived={archived}
             />
           </section>
 
@@ -417,12 +449,20 @@ function MetricCards({
   selectedCatIds,
   showUncategorized,
   onToggleUncategorized,
+  onRecategorize,
+  recategorizing,
+  recatResult,
+  archived,
 }: {
   metrics: Summary["metrics"];
   categories: Summary["categories"];
   selectedCatIds: Set<string>;
   showUncategorized: boolean;
   onToggleUncategorized: () => void;
+  onRecategorize: () => void;
+  recategorizing: boolean;
+  recatResult: string | null;
+  archived: boolean;
 }) {
   // When categories are selected, compute filtered metrics from per-category data
   const filtered = selectedCatIds.size > 0;
@@ -483,14 +523,29 @@ function MetricCards({
           subtext={`of ${categories.length} selected`}
         />
       ) : (
-        <MetricCard
-          label="Uncategorized"
-          value={String(metrics.uncategorized_count)}
-          subtext={showUncategorized ? "filtered" : "needs attention"}
-          valueClass={metrics.uncategorized_count > 0 ? "text-yellow-600" : undefined}
-          onClick={metrics.uncategorized_count > 0 ? onToggleUncategorized : undefined}
-          selected={showUncategorized}
-        />
+        <div className="space-y-2">
+          <MetricCard
+            label="Uncategorized"
+            value={String(metrics.uncategorized_count)}
+            subtext={showUncategorized ? "filtered" : "needs attention"}
+            valueClass={metrics.uncategorized_count > 0 ? "text-yellow-600" : undefined}
+            onClick={metrics.uncategorized_count > 0 ? onToggleUncategorized : undefined}
+            selected={showUncategorized}
+          />
+          {metrics.uncategorized_count > 0 && !archived && (
+            <button
+              type="button"
+              onClick={onRecategorize}
+              disabled={recategorizing}
+              className="w-full rounded-lg border border-[var(--color-border)] px-2 py-1.5 text-xs hover:bg-[var(--color-muted)] disabled:opacity-50"
+            >
+              {recategorizing ? "Categorizing..." : "Auto-categorize"}
+            </button>
+          )}
+          {recatResult && (
+            <p className="text-center text-xs text-[var(--color-muted-foreground)]">{recatResult}</p>
+          )}
+        </div>
       )}
     </div>
   );
