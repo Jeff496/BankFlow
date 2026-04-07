@@ -139,8 +139,6 @@ async function handler(req: NextRequest): Promise<Response> {
   let keywordCount = 0;
   let historyCount = 0;
   let llmCount = 0;
-  let newCategoriesCreated = 0;
-  const newCategoriesList: Array<{ id: string; name: string }> = [];
 
   // Map to hold category assignment per index; null = uncategorized so far
   const categoryIds: (string | null)[] = new Array(toInsert.length).fill(null);
@@ -180,81 +178,31 @@ async function handler(req: NextRequest): Promise<Response> {
     }
   }
 
-  // Tier 3: LLM batch categorization — run separately for expense and income
-  // descriptions so the LLM creates appropriately typed categories.
+  // Tier 3: LLM assigns to existing categories only (never creates new ones)
   async function runLlmTier(
     descs: Set<string>,
     catPool: typeof categories,
     catType: "expense" | "income",
   ) {
-    if (descs.size === 0) return;
-    const llmResult = await categorizeBatchWithLLM(
+    if (descs.size === 0 || catPool.length === 0) return;
+    const assignments = await categorizeBatchWithLLM(
       Array.from(descs),
-      catPool.map((c) => ({ id: c.id, name: c.name, type: c.type ?? "expense" })),
-      catType,
+      catPool.map((c) => ({ id: c.id, name: c.name })),
     );
 
-    // Create new categories suggested by the LLM
-    const newCatNameToId = new Map<string, string>();
-    if (llmResult.newCategories.size > 0) {
-      const uniqueNames = new Map<string, string>();
-      for (const name of llmResult.newCategories.values()) {
-        const key = name.toLowerCase();
-        if (!uniqueNames.has(key)) uniqueNames.set(key, name);
-      }
-
-      const newCatRows = Array.from(uniqueNames.values()).map((name) => ({
-        budget_id,
-        name,
-        type: catType,
-        keywords: [] as string[],
-      }));
-
-      try {
-        const inserted = await tracedQuery("categories.create_from_llm", () =>
-          supabase.from("categories").insert(newCatRows).select("id, name"),
-        );
-        for (const cat of inserted) {
-          newCatNameToId.set(cat.name.toLowerCase(), cat.id);
-          newCategoriesList.push({ id: cat.id, name: cat.name });
-        }
-        newCategoriesCreated += inserted.length;
-      } catch (err) {
-        log().error({
-          event: "llm.categories.create_failed",
-          catType,
-          reason: err instanceof Error ? err.message : "unknown",
-        });
-      }
-    }
-
-    // Apply LLM results back to uncategorized transactions
     for (let i = 0; i < toInsert.length; i++) {
       if (categoryIds[i] !== null) continue;
       const isIncome = toInsert[i].amount > 0;
       if ((catType === "income") !== isIncome) continue;
 
-      const desc = toInsert[i].description;
-
-      const existingId = llmResult.assignments.get(desc);
-      if (existingId) {
-        categoryIds[i] = existingId;
+      const catId = assignments.get(toInsert[i].description);
+      if (catId) {
+        categoryIds[i] = catId;
         llmCount++;
-        continue;
-      }
-
-      const newCatName = llmResult.newCategories.get(desc);
-      if (newCatName) {
-        const newId = newCatNameToId.get(newCatName.toLowerCase());
-        if (newId) {
-          categoryIds[i] = newId;
-          llmCount++;
-        }
       }
     }
   }
 
-  // Run LLM for expense and income descriptions (can run in parallel)
   await Promise.all([
     runLlmTier(uncategorizedExpenseDescs, expenseCategories, "expense"),
     runLlmTier(uncategorizedIncomeDescs, incomeCategories, "income"),
@@ -300,7 +248,6 @@ async function handler(req: NextRequest): Promise<Response> {
     autoKeywordCount: keywordCount,
     autoHistoryCount: historyCount,
     autoLlmCount: llmCount,
-    newCategoriesCreated,
   });
 
   return created({
@@ -310,8 +257,6 @@ async function handler(req: NextRequest): Promise<Response> {
     auto_keyword_count: keywordCount,
     auto_history_count: historyCount,
     auto_llm_count: llmCount,
-    new_categories_created: newCategoriesCreated,
-    new_categories: newCategoriesList,
     skipped_duplicates: duplicatesFound,
   });
 }

@@ -5,6 +5,11 @@ import { requireUser } from "@/lib/api/auth";
 import { ValidationError } from "@/lib/api/errors";
 import { created, ok } from "@/lib/api/response";
 import { tracedQuery } from "@/lib/supabase/logged-client";
+import { log } from "@/lib/logger";
+import {
+  DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_INCOME_CATEGORIES,
+} from "@/lib/default-categories";
 
 const createBudgetSchema = z.object({
   name: z.string().trim().min(1, "name is required").max(200),
@@ -30,6 +35,35 @@ async function postHandler(req: NextRequest): Promise<Response> {
       .select("*")
       .single(),
   );
+
+  // Seed default categories
+  const catRows = [
+    ...DEFAULT_EXPENSE_CATEGORIES.map((c) => ({
+      budget_id: budget.id,
+      name: c.name,
+      type: "expense",
+      color: c.color,
+      keywords: [...c.keywords],
+    })),
+    ...DEFAULT_INCOME_CATEGORIES.map((c) => ({
+      budget_id: budget.id,
+      name: c.name,
+      type: "income",
+      color: c.color,
+      keywords: [...c.keywords],
+    })),
+  ];
+  try {
+    await tracedQuery("categories.seed_defaults", () =>
+      supabase.from("categories").insert(catRows).select("id"),
+    );
+  } catch (err) {
+    log().error({
+      event: "categories.seed_defaults_failed",
+      budgetId: budget.id,
+      reason: err instanceof Error ? err.message : "unknown",
+    });
+  }
 
   return created({ budget });
 }
