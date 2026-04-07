@@ -15,6 +15,7 @@ interface Summary {
   };
   metrics: {
     total_spent: number;
+    total_income: number;
     transaction_count: number;
     uncategorized_count: number;
     total_limit: number;
@@ -23,6 +24,7 @@ interface Summary {
   categories: Array<{
     id: string;
     name: string;
+    type: string;
     color: string;
     monthly_limit: number | null;
     spent: number;
@@ -64,9 +66,11 @@ export function BudgetDashboard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addCatOpen, setAddCatOpen] = useState(false);
+  const [addCatType, setAddCatType] = useState<"expense" | "income">("expense");
   const [editCat, setEditCat] = useState<Summary["categories"][number] | null>(null);
   const [archiving, setArchiving] = useState(false);
   const [selectedCatIds, setSelectedCatIds] = useState<Set<string>>(new Set());
+  const [showUncategorized, setShowUncategorized] = useState(false);
   const [txRefresh, setTxRefresh] = useState(0);
 
   // Set default range (current month in browser TZ) once on mount
@@ -199,33 +203,40 @@ export function BudgetDashboard({
               metrics={summary.metrics}
               categories={summary.categories}
               selectedCatIds={selectedCatIds}
+              showUncategorized={showUncategorized}
+              onToggleUncategorized={() => {
+                setShowUncategorized((prev) => !prev);
+                setSelectedCatIds(new Set());
+              }}
             />
           </section>
 
+          {/* Spending categories */}
           <section className="mt-8">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Categories</h2>
+              <h2 className="text-lg font-semibold">Spending</h2>
               <button
                 type="button"
-                onClick={() => setAddCatOpen(true)}
+                onClick={() => { setAddCatType("expense"); setAddCatOpen(true); }}
                 disabled={archived}
                 className="text-sm text-[var(--color-primary)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
               >
                 + Add category
               </button>
             </div>
-            {summary.categories.length > 0 ? (
+            {summary.categories.filter((c) => c.type !== "income").length > 0 ? (
               <CategoryGrid
-                categories={summary.categories}
+                categories={summary.categories.filter((c) => c.type !== "income")}
                 selectedIds={selectedCatIds}
-                onToggle={(id) =>
+                onToggle={(id) => {
+                  setShowUncategorized(false);
                   setSelectedCatIds((prev) => {
                     const next = new Set(prev);
                     if (next.has(id)) next.delete(id);
                     else next.add(id);
                     return next;
-                  })
-                }
+                  });
+                }}
                 onEdit={(c) => setEditCat(c)}
                 onDelete={archived ? undefined : deleteCategory}
               />
@@ -233,9 +244,45 @@ export function BudgetDashboard({
               <EmptyState
                 message="Add categories to organize your transactions and set spending limits."
                 actionLabel="Add category"
-                onAction={() => setAddCatOpen(true)}
+                onAction={() => { setAddCatType("expense"); setAddCatOpen(true); }}
                 disabled={archived}
               />
+            )}
+          </section>
+
+          {/* Income categories */}
+          <section className="mt-8">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Income</h2>
+              <button
+                type="button"
+                onClick={() => { setAddCatType("income"); setAddCatOpen(true); }}
+                disabled={archived}
+                className="text-sm text-[var(--color-primary)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                + Add category
+              </button>
+            </div>
+            {summary.categories.filter((c) => c.type === "income").length > 0 ? (
+              <CategoryGrid
+                categories={summary.categories.filter((c) => c.type === "income")}
+                selectedIds={selectedCatIds}
+                onToggle={(id) => {
+                  setShowUncategorized(false);
+                  setSelectedCatIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  });
+                }}
+                onEdit={(c) => setEditCat(c)}
+                onDelete={archived ? undefined : deleteCategory}
+              />
+            ) : (
+              <p className="rounded-xl border border-dashed border-[var(--color-border)] p-6 text-center text-sm text-[var(--color-muted-foreground)]">
+                Income categories are created automatically when you upload transactions with positive amounts.
+              </p>
             )}
           </section>
 
@@ -243,10 +290,11 @@ export function BudgetDashboard({
             budgetId={budgetId}
             range={range}
             selectedCatIds={selectedCatIds}
+            showUncategorized={showUncategorized}
             categories={summary.categories}
             archived={archived}
             refreshKey={txRefresh}
-            onClearFilter={() => setSelectedCatIds(new Set())}
+            onClearFilter={() => { setSelectedCatIds(new Set()); setShowUncategorized(false); }}
             onDelete={deleteTransaction}
           />
 
@@ -284,6 +332,7 @@ export function BudgetDashboard({
       {addCatOpen && (
         <AddCategoryForm
           budgetId={budgetId}
+          categoryType={addCatType}
           onClose={() => setAddCatOpen(false)}
           onCreated={() => {
             setAddCatOpen(false);
@@ -366,10 +415,14 @@ function MetricCards({
   metrics,
   categories,
   selectedCatIds,
+  showUncategorized,
+  onToggleUncategorized,
 }: {
   metrics: Summary["metrics"];
   categories: Summary["categories"];
   selectedCatIds: Set<string>;
+  showUncategorized: boolean;
+  onToggleUncategorized: () => void;
 }) {
   // When categories are selected, compute filtered metrics from per-category data
   const filtered = selectedCatIds.size > 0;
@@ -378,10 +431,13 @@ function MetricCards({
     : [];
 
   const totalSpent = filtered
-    ? selectedCats.reduce((sum, c) => sum + c.spent, 0)
+    ? selectedCats.filter((c) => c.type !== "income").reduce((sum, c) => sum + c.spent, 0)
     : metrics.total_spent;
+  const totalIncome = filtered
+    ? selectedCats.filter((c) => c.type === "income").reduce((sum, c) => sum + c.spent, 0)
+    : metrics.total_income;
   const totalLimit = filtered
-    ? selectedCats.reduce((sum, c) => sum + (c.monthly_limit ?? 0), 0)
+    ? selectedCats.filter((c) => c.type !== "income").reduce((sum, c) => sum + (c.monthly_limit ?? 0), 0)
     : metrics.total_limit;
   const remaining = totalLimit - totalSpent;
   const txCount = filtered
@@ -393,15 +449,21 @@ function MetricCards({
       ? Math.max(0, Math.round((remaining / totalLimit) * 100))
       : null;
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
       <MetricCard
-        label="Total spent"
+        label="Spending"
         value={formatAmount(totalSpent)}
         subtext={
           totalLimit > 0
             ? `of ${formatAmount(totalLimit)} limit`
             : "no limits set"
         }
+      />
+      <MetricCard
+        label="Income"
+        value={formatAmount(totalIncome)}
+        subtext="in date range"
+        valueClass={totalIncome > 0 ? "text-green-600" : undefined}
       />
       <MetricCard
         label="Remaining"
@@ -424,8 +486,10 @@ function MetricCards({
         <MetricCard
           label="Uncategorized"
           value={String(metrics.uncategorized_count)}
-          subtext="needs attention"
+          subtext={showUncategorized ? "filtered" : "needs attention"}
           valueClass={metrics.uncategorized_count > 0 ? "text-yellow-600" : undefined}
+          onClick={metrics.uncategorized_count > 0 ? onToggleUncategorized : undefined}
+          selected={showUncategorized}
         />
       )}
     </div>
@@ -437,14 +501,25 @@ function MetricCard({
   value,
   subtext,
   valueClass,
+  onClick,
+  selected,
 }: {
   label: string;
   value: string;
   subtext: string;
   valueClass?: string;
+  onClick?: () => void;
+  selected?: boolean;
 }) {
   return (
-    <div className="rounded-xl bg-[var(--color-muted)] p-4">
+    <div
+      className={`rounded-xl p-4 ${
+        selected
+          ? "border-2 border-[var(--color-primary)] bg-[var(--color-muted)]"
+          : "bg-[var(--color-muted)]"
+      } ${onClick ? "cursor-pointer hover:opacity-80" : ""}`}
+      onClick={onClick}
+    >
       <p className="text-xs font-medium text-[var(--color-muted-foreground)]">{label}</p>
       <p className={`mt-1 text-2xl font-bold ${valueClass ?? ""}`}>{value}</p>
       <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">{subtext}</p>
@@ -587,6 +662,7 @@ function TransactionSection({
   budgetId,
   range,
   selectedCatIds,
+  showUncategorized,
   categories,
   archived,
   refreshKey,
@@ -596,6 +672,7 @@ function TransactionSection({
   budgetId: string;
   range: DateRange | null;
   selectedCatIds: Set<string>;
+  showUncategorized: boolean;
   categories: Summary["categories"];
   archived: boolean;
   refreshKey: number;
@@ -606,8 +683,30 @@ function TransactionSection({
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const catMap = new Map(categories.map((c) => [c.id, c]));
+
+  async function updateCategory(txId: string, categoryId: string | null) {
+    setBusyId(txId);
+    try {
+      const res = await fetch(`/api/transactions/${txId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ category_id: categoryId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setRows((prev) =>
+        prev.map((r) => (r.id === txId ? { ...r, category_id: categoryId } : r)),
+      );
+      setEditingId(null);
+    } catch {
+      // ignore — errors shown elsewhere
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const fetchPage = useCallback(
     async (cursorVal: string | null, append: boolean) => {
@@ -621,8 +720,10 @@ function TransactionSection({
           end_date: range.end,
         });
         if (cursorVal) params.set("cursor", cursorVal);
-        // If exactly one category selected, use server-side filter
-        if (selectedCatIds.size === 1) {
+        if (showUncategorized) {
+          params.set("uncategorized", "true");
+        } else if (selectedCatIds.size === 1) {
+          // If exactly one category selected, use server-side filter
           params.set("category_id", [...selectedCatIds][0]);
         }
         const res = await fetch(`/api/transactions?${params}`);
@@ -638,7 +739,7 @@ function TransactionSection({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [budgetId, range, selectedCatIds, refreshKey],
+    [budgetId, range, selectedCatIds, showUncategorized, refreshKey],
   );
 
   useEffect(() => {
@@ -655,9 +756,9 @@ function TransactionSection({
     <section className="mt-8">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold">
-          {selectedCatIds.size > 0 ? "Filtered transactions" : "Transactions"}
+          {showUncategorized ? "Uncategorized transactions" : selectedCatIds.size > 0 ? "Filtered transactions" : "Transactions"}
         </h2>
-        {selectedCatIds.size > 0 && (
+        {(selectedCatIds.size > 0 || showUncategorized) && (
           <button
             type="button"
             onClick={onClearFilter}
@@ -710,12 +811,34 @@ function TransactionSection({
                         {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
                       </td>
                       <td className="p-2">
-                        {t.category_id ? (
-                          <CategoryBadge cat={catMap.get(t.category_id)} />
+                        {editingId === t.id ? (
+                          <select
+                            autoFocus
+                            value={t.category_id ?? ""}
+                            onChange={(e) => updateCategory(t.id, e.target.value || null)}
+                            onBlur={() => setEditingId(null)}
+                            disabled={busyId === t.id}
+                            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-1 py-0.5 text-xs"
+                          >
+                            <option value="">Uncategorized</option>
+                            {categories.map((c) => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </select>
                         ) : (
-                          <span className="rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)]">
-                            Uncategorized
-                          </span>
+                          <button
+                            type="button"
+                            onClick={() => !archived && setEditingId(t.id)}
+                            className={`rounded-full px-2 py-0.5 text-xs ${!archived ? "hover:ring-1 hover:ring-[var(--color-border)]" : ""}`}
+                            style={
+                              t.category_id && catMap.get(t.category_id)
+                                ? { backgroundColor: `${catMap.get(t.category_id)!.color}22`, color: catMap.get(t.category_id)!.color }
+                                : undefined
+                            }
+                            disabled={archived}
+                          >
+                            {t.category_id && catMap.get(t.category_id) ? catMap.get(t.category_id)!.name : "Uncategorized"}
+                          </button>
                         )}
                       </td>
                       {!archived && (
@@ -766,12 +889,34 @@ function TransactionSection({
                     >
                       {amt < 0 ? "-" : "+"}{formatAmount(Math.abs(amt))}
                     </span>
-                    {t.category_id ? (
-                      <CategoryBadge cat={catMap.get(t.category_id)} />
+                    {editingId === t.id ? (
+                      <select
+                        autoFocus
+                        value={t.category_id ?? ""}
+                        onChange={(e) => updateCategory(t.id, e.target.value || null)}
+                        onBlur={() => setEditingId(null)}
+                        disabled={busyId === t.id}
+                        className="w-full rounded border border-[var(--color-border)] bg-[var(--color-background)] px-1 py-0.5 text-xs"
+                      >
+                        <option value="">Uncategorized</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
                     ) : (
-                      <span className="rounded-full bg-[var(--color-muted)] px-2 py-0.5 text-xs text-[var(--color-muted-foreground)]">
-                        Uncategorized
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => !archived && setEditingId(t.id)}
+                        className={`rounded-full px-2 py-0.5 text-xs ${!archived ? "hover:ring-1 hover:ring-[var(--color-border)]" : ""}`}
+                        style={
+                          t.category_id && catMap.get(t.category_id)
+                            ? { backgroundColor: `${catMap.get(t.category_id)!.color}22`, color: catMap.get(t.category_id)!.color }
+                            : undefined
+                        }
+                        disabled={archived}
+                      >
+                        {t.category_id && catMap.get(t.category_id) ? catMap.get(t.category_id)!.name : "Uncategorized"}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -801,25 +946,6 @@ function TransactionSection({
   );
 }
 
-function CategoryBadge({
-  cat,
-}: {
-  cat: Summary["categories"][number] | undefined;
-}) {
-  if (!cat) return null;
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs"
-      style={{ backgroundColor: `${cat.color}22`, color: cat.color }}
-    >
-      <span
-        className="inline-block h-1.5 w-1.5 rounded-full"
-        style={{ backgroundColor: cat.color }}
-      />
-      {cat.name}
-    </span>
-  );
-}
 
 function EmptyState({
   message,
@@ -885,10 +1011,12 @@ function UploadZone({
 
 function AddCategoryForm({
   budgetId,
+  categoryType,
   onClose,
   onCreated,
 }: {
   budgetId: string;
+  categoryType: "expense" | "income";
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -906,6 +1034,7 @@ function AddCategoryForm({
       const body: Record<string, unknown> = {
         budget_id: budgetId,
         name: name.trim(),
+        type: categoryType,
         color,
       };
       if (monthlyLimit) body.monthly_limit = Number(monthlyLimit);
@@ -947,7 +1076,7 @@ function AddCategoryForm({
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-md rounded-2xl bg-[var(--color-background)] p-6 shadow-xl"
       >
-        <h2 className="text-lg font-semibold">Add category</h2>
+        <h2 className="text-lg font-semibold">Add {categoryType} category</h2>
         <div className="mt-4 space-y-3">
           <label className="block text-sm">
             Name

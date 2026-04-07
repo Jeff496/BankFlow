@@ -13,6 +13,7 @@ const paramsSchema = z.object({ id: z.uuid() });
 const updateCategorySchema = z
   .object({
     name: z.string().trim().min(1, "name is required").max(100).optional(),
+    type: z.enum(["expense", "income"]).optional(),
     monthly_limit: z.number().nonnegative().nullable().optional(),
     keywords: z
       .array(z.string().trim().min(1).max(200))

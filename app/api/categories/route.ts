@@ -11,6 +11,7 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const createCategorySchema = z.object({
   budget_id: z.uuid(),
   name: z.string().trim().min(1, "name is required").max(100),
+  type: z.enum(["expense", "income"]).default("expense"),
   monthly_limit: z.number().nonnegative().nullable().optional(),
   keywords: z
     .array(z.string().trim().min(1).max(200))
@@ -38,6 +39,7 @@ async function postHandler(req: NextRequest): Promise<Response> {
       .insert({
         budget_id: parsed.budget_id,
         name: parsed.name,
+        type: parsed.type,
         monthly_limit: parsed.monthly_limit ?? null,
         keywords: parsed.keywords ?? [],
         ...(parsed.color ? { color: parsed.color } : {}),

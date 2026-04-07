@@ -11,6 +11,7 @@ export interface LLMCategorizationResult {
 interface CategoryInfo {
   id: string;
   name: string;
+  type?: string; // 'expense' | 'income'
 }
 
 const BATCH_SIZE = 100;
@@ -28,17 +29,23 @@ function getClient(): Anthropic | null {
 function buildPrompt(
   descriptions: string[],
   categories: CategoryInfo[],
+  transactionType: "expense" | "income" = "expense",
 ): string {
   const catList =
     categories.length > 0
       ? categories.map((c) => `  "${c.id}": "${c.name}"`).join("\n")
       : "  (none)";
 
+  const typeHint = transactionType === "income"
+    ? "\nThese are INCOME transactions (deposits, refunds, payments received). Suggest income-appropriate category names (e.g. \"Salary\", \"Freelance\", \"Refunds\", \"Interest\", \"Transfers In\")."
+    : "\nThese are EXPENSE transactions (purchases, payments, withdrawals). Suggest expense-appropriate category names (e.g. \"Groceries\", \"Gas\", \"Subscriptions\", \"Dining\").";
+
   return `You are a bank transaction categorizer. You will be given a list of raw bank transaction descriptions and a list of existing budget categories.
+${typeHint}
 
 For each transaction description, do ONE of the following:
 1. If an existing category fits, assign it by returning the category id.
-2. If no existing category fits but you can identify what the transaction is for, suggest a short new category name (e.g. "Groceries", "Gas", "Subscriptions"). Use common, concise budget category names. Consolidate similar transactions under the same new category name.
+2. If no existing category fits but you can identify what the transaction is for, suggest a short new category name. Use common, concise budget category names. Consolidate similar transactions under the same new category name.
 3. If the transaction is truly ambiguous or unidentifiable (e.g. generic "ACH Withdrawal"), return null.
 
 Existing categories:
@@ -57,6 +64,7 @@ Every description must appear in exactly one of the two objects. Descriptions as
 async function callLLM(
   descriptions: string[],
   categories: CategoryInfo[],
+  transactionType: "expense" | "income" = "expense",
 ): Promise<{ assign: Record<string, string | null>; create: Record<string, string> }> {
   const client = getClient();
   if (!client) throw new Error("no_api_key");
@@ -67,7 +75,7 @@ async function callLLM(
     messages: [
       {
         role: "user",
-        content: buildPrompt(descriptions, categories),
+        content: buildPrompt(descriptions, categories, transactionType),
       },
     ],
   });
@@ -94,6 +102,7 @@ async function callLLM(
 export async function categorizeBatchWithLLM(
   descriptions: string[],
   categories: CategoryInfo[],
+  transactionType: "expense" | "income" = "expense",
 ): Promise<LLMCategorizationResult> {
   const empty: LLMCategorizationResult = {
     assignments: new Map(),
@@ -118,7 +127,7 @@ export async function categorizeBatchWithLLM(
     const batch = descriptions.slice(i, i + BATCH_SIZE);
 
     try {
-      const llmResult = await callLLM(batch, categories);
+      const llmResult = await callLLM(batch, categories, transactionType);
 
       // Process assignments to existing categories
       if (llmResult.assign) {

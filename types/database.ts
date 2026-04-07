@@ -162,6 +162,7 @@ export type Database = {
           id: string;
           budget_id: string;
           name: string;
+          type: string; // 'expense' | 'income'
           monthly_limit: string | null; // numeric → string in PostgREST
           keywords: string[];
           color: string;
@@ -172,6 +173,7 @@ export type Database = {
           id?: string;
           budget_id: string;
           name: string;
+          type?: string;
           monthly_limit?: string | number | null;
           keywords?: string[];
           color?: string;
@@ -182,6 +184,7 @@ export type Database = {
           id?: string;
           budget_id?: string;
           name?: string;
+          type?: string;
           monthly_limit?: string | number | null;
           keywords?: string[];
           color?: string;

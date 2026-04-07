@@ -105,11 +105,16 @@ async function handler(req: NextRequest): Promise<Response> {
   const categories = await tracedQuery("categories.for_categorize", () =>
     supabase
       .from("categories")
-      .select("id, name, keywords, created_at")
+      .select("id, name, type, keywords, created_at")
       .eq("budget_id", budget_id)
       .order("created_at", { ascending: true }),
   );
-  const rules = prepareRules(categories);
+
+  // Split categories by type for targeted matching
+  const expenseCategories = categories.filter((c) => (c.type ?? "expense") === "expense");
+  const incomeCategories = categories.filter((c) => (c.type ?? "expense") === "income");
+  const expenseRules = prepareRules(expenseCategories);
+  const incomeRules = prepareRules(incomeCategories);
 
   // Fetch previously categorized transactions for history-based matching.
   const history = await tracedQuery("transactions.for_history_match", () =>
@@ -133,14 +138,17 @@ async function handler(req: NextRequest): Promise<Response> {
   // Map to hold category assignment per index; null = uncategorized so far
   const categoryIds: (string | null)[] = new Array(toInsert.length).fill(null);
 
-  // Collect uncategorized descriptions for LLM (deduplicated)
-  const uncategorizedDescs = new Set<string>();
+  // Collect uncategorized descriptions for LLM (deduplicated), split by type
+  const uncategorizedExpenseDescs = new Set<string>();
+  const uncategorizedIncomeDescs = new Set<string>();
 
   // Tier 1 (keywords) + Tier 2 (history)
   for (let i = 0; i < toInsert.length; i++) {
     const desc = toInsert[i].description;
+    const isIncome = toInsert[i].amount > 0;
+    const rules = isIncome ? incomeRules : expenseRules;
 
-    // Tier 1: keyword match
+    // Tier 1: keyword match (type-specific categories only)
     const kwMatch = categorize(desc, rules);
     if (kwMatch) {
       categoryIds[i] = kwMatch;
@@ -158,30 +166,40 @@ async function handler(req: NextRequest): Promise<Response> {
       }
     }
 
-    uncategorizedDescs.add(desc);
+    if (isIncome) {
+      uncategorizedIncomeDescs.add(desc);
+    } else {
+      uncategorizedExpenseDescs.add(desc);
+    }
   }
 
-  // Tier 3: LLM batch categorization (only for unique uncategorized descriptions)
-  if (uncategorizedDescs.size > 0 && categories.length > 0) {
+  // Tier 3: LLM batch categorization — run separately for expense and income
+  // descriptions so the LLM creates appropriately typed categories.
+  async function runLlmTier(
+    descs: Set<string>,
+    catPool: typeof categories,
+    catType: "expense" | "income",
+  ) {
+    if (descs.size === 0) return;
     const llmResult = await categorizeBatchWithLLM(
-      Array.from(uncategorizedDescs),
-      categories.map((c) => ({ id: c.id, name: c.name })),
+      Array.from(descs),
+      catPool.map((c) => ({ id: c.id, name: c.name, type: c.type ?? "expense" })),
+      catType,
     );
 
     // Create new categories suggested by the LLM
     const newCatNameToId = new Map<string, string>();
     if (llmResult.newCategories.size > 0) {
-      // Deduplicate suggested names (case-insensitive)
       const uniqueNames = new Map<string, string>();
       for (const name of llmResult.newCategories.values()) {
         const key = name.toLowerCase();
         if (!uniqueNames.has(key)) uniqueNames.set(key, name);
       }
 
-      // Bulk-insert new categories
       const newCatRows = Array.from(uniqueNames.values()).map((name) => ({
         budget_id,
         name,
+        type: catType,
         keywords: [] as string[],
       }));
 
@@ -193,23 +211,24 @@ async function handler(req: NextRequest): Promise<Response> {
           newCatNameToId.set(cat.name.toLowerCase(), cat.id);
           newCategoriesList.push({ id: cat.id, name: cat.name });
         }
-        newCategoriesCreated = inserted.length;
+        newCategoriesCreated += inserted.length;
       } catch (err) {
         log().error({
           event: "llm.categories.create_failed",
+          catType,
           reason: err instanceof Error ? err.message : "unknown",
         });
-        // Continue without new categories — assignments to existing ones still apply
       }
     }
 
     // Apply LLM results back to uncategorized transactions
     for (let i = 0; i < toInsert.length; i++) {
-      if (categoryIds[i] !== null) continue; // already categorized by Tier 1 or 2
+      if (categoryIds[i] !== null) continue;
+      const isIncome = toInsert[i].amount > 0;
+      if ((catType === "income") !== isIncome) continue;
 
       const desc = toInsert[i].description;
 
-      // Check assignment to existing category
       const existingId = llmResult.assignments.get(desc);
       if (existingId) {
         categoryIds[i] = existingId;
@@ -217,57 +236,6 @@ async function handler(req: NextRequest): Promise<Response> {
         continue;
       }
 
-      // Check new category suggestion
-      const newCatName = llmResult.newCategories.get(desc);
-      if (newCatName) {
-        const newId = newCatNameToId.get(newCatName.toLowerCase());
-        if (newId) {
-          categoryIds[i] = newId;
-          llmCount++;
-        }
-      }
-    }
-  } else if (uncategorizedDescs.size > 0 && categories.length === 0) {
-    // No existing categories — let LLM create from scratch
-    const llmResult = await categorizeBatchWithLLM(
-      Array.from(uncategorizedDescs),
-      [],
-    );
-
-    const newCatNameToId = new Map<string, string>();
-    if (llmResult.newCategories.size > 0) {
-      const uniqueNames = new Map<string, string>();
-      for (const name of llmResult.newCategories.values()) {
-        const key = name.toLowerCase();
-        if (!uniqueNames.has(key)) uniqueNames.set(key, name);
-      }
-
-      const newCatRows = Array.from(uniqueNames.values()).map((name) => ({
-        budget_id,
-        name,
-        keywords: [] as string[],
-      }));
-
-      try {
-        const inserted = await tracedQuery("categories.create_from_llm", () =>
-          supabase.from("categories").insert(newCatRows).select("id, name"),
-        );
-        for (const cat of inserted) {
-          newCatNameToId.set(cat.name.toLowerCase(), cat.id);
-          newCategoriesList.push({ id: cat.id, name: cat.name });
-        }
-        newCategoriesCreated = inserted.length;
-      } catch (err) {
-        log().error({
-          event: "llm.categories.create_failed",
-          reason: err instanceof Error ? err.message : "unknown",
-        });
-      }
-    }
-
-    for (let i = 0; i < toInsert.length; i++) {
-      if (categoryIds[i] !== null) continue;
-      const desc = toInsert[i].description;
       const newCatName = llmResult.newCategories.get(desc);
       if (newCatName) {
         const newId = newCatNameToId.get(newCatName.toLowerCase());
@@ -278,6 +246,12 @@ async function handler(req: NextRequest): Promise<Response> {
       }
     }
   }
+
+  // Run LLM for expense and income descriptions (can run in parallel)
+  await Promise.all([
+    runLlmTier(uncategorizedExpenseDescs, expenseCategories, "expense"),
+    runLlmTier(uncategorizedIncomeDescs, incomeCategories, "income"),
+  ]);
 
   const autoCategorized = keywordCount + historyCount + llmCount;
 

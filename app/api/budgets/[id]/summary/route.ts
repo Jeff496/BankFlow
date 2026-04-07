@@ -53,7 +53,7 @@ async function handler(
     tracedQuery("dashboard.categories", () =>
       supabase
         .from("categories")
-        .select("id, name, color, monthly_limit, created_at")
+        .select("id, name, type, color, monthly_limit, created_at")
         .eq("budget_id", id)
         .order("created_at", { ascending: true }),
     ),
@@ -69,19 +69,38 @@ async function handler(
     ),
   ]);
 
-  // Aggregate — net spending includes positive amounts (refunds, income)
-  // so they offset expenses within the same category/budget.
+  // Build a set of income category IDs for fast lookup
+  const catTypeMap = new Map<string, string>();
+  for (const c of categories) {
+    catTypeMap.set(c.id, c.type ?? "expense");
+  }
+
+  // Aggregate — separate income and expense tracking.
+  // Expense categories: negative amounts add to spent (positive amounts offset/reduce spent).
+  // Income categories: positive amounts add to earned.
   let total_spent = 0;
+  let total_income = 0;
   let uncategorized_count = 0;
   const perCategory = new Map<string, { spent: number; count: number }>();
   for (const t of transactions) {
     const amt = Number(t.amount);
-    total_spent += Math.abs(amt) * (amt < 0 ? 1 : -1); // expenses add, income subtracts
+    const catType = t.category_id ? catTypeMap.get(t.category_id) ?? "expense" : null;
+
     if (t.category_id === null) {
       uncategorized_count += 1;
+      // Uncategorized expenses still count toward total_spent
+      if (amt < 0) total_spent += Math.abs(amt);
     } else {
       const entry = perCategory.get(t.category_id) ?? { spent: 0, count: 0 };
-      entry.spent += Math.abs(amt) * (amt < 0 ? 1 : -1);
+      if (catType === "income") {
+        // Income categories: track positive amounts as earned
+        entry.spent += Math.abs(amt);
+        total_income += Math.abs(amt);
+      } else {
+        // Expense categories: negative = spending, positive = refund (offsets)
+        entry.spent += Math.abs(amt) * (amt < 0 ? 1 : -1);
+        total_spent += Math.abs(amt) * (amt < 0 ? 1 : -1);
+      }
       entry.count += 1;
       perCategory.set(t.category_id, entry);
     }
@@ -90,11 +109,14 @@ async function handler(
   let total_limit = 0;
   const categoriesOut = categories.map((c) => {
     const lim = c.monthly_limit !== null ? Number(c.monthly_limit) : null;
-    if (lim !== null) total_limit += lim;
+    const isIncome = (c.type ?? "expense") === "income";
+    // Only expense categories count toward budget limits
+    if (lim !== null && !isIncome) total_limit += lim;
     const agg = perCategory.get(c.id) ?? { spent: 0, count: 0 };
     return {
       id: c.id,
       name: c.name,
+      type: c.type ?? "expense",
       color: c.color,
       monthly_limit: lim,
       spent: round2(agg.spent),
@@ -104,6 +126,7 @@ async function handler(
 
   const metrics = {
     total_spent: round2(total_spent),
+    total_income: round2(total_income),
     transaction_count: transactions.length,
     uncategorized_count,
     total_limit: round2(total_limit),
